@@ -175,17 +175,24 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             self._send_json_error(500, str(e))
 
     def serve_sse(self):
-        """Serve Server-Sent Events stream (stub — watch mode not yet implemented)."""
+        """Serve Server-Sent Events stream — sends keepalives, no watch mode yet."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Access-Control-Allow-Origin", "*")
+        # Tell the browser not to retry aggressively (retry: 0 disables auto-reconnect)
         self.end_headers()
-        # Keep connection open briefly then close — watch mode not yet implemented
         try:
-            self.wfile.write(b": connected\n\n")
+            # Send a comment ping every 15 s to keep the connection alive.
+            # The browser will hold one open connection and stop hammering us.
+            self.wfile.write(b"retry: 0\n: connected\n\n")
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+            import time
+            while True:
+                time.sleep(15)
+                self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
     def _send_json(self, data: dict):
