@@ -140,9 +140,33 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             query = params.get("q", [""])[0]
             limit = int(params.get("limit", [100])[0])
             self.serve_search(query, limit)
+        elif path == "/api/analysis/risk":
+            self.serve_risk()
         else:
             self.send_error(404, "API endpoint not found")
     
+    def serve_risk(self):
+        """Serve top-N highest-risk nodes sorted by risk_score descending."""
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+
+            graph = Graph.from_dict(graph_data)
+            nodes = graph.top_risk(limit=50)
+
+            result = {
+                "count": len(nodes),
+                "nodes": [n.to_dict() for n in nodes],
+            }
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
     def serve_source(self, file_path: str, line: int):
         """Serve source file content."""
         if not file_path:

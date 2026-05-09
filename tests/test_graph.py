@@ -739,3 +739,70 @@ def test_search_sorted_by_label():
     results = g.search("type=model")
     labels = [n.label for n in results]
     assert labels == sorted(labels)
+
+
+# ── top_risk() tests ──────────────────────────────────────────────────────────
+
+def _make_risk_graph() -> Graph:
+    """Graph with nodes that have risk_score metadata."""
+    g = Graph()
+    nodes = [
+        Node("action::high_risk", NodeType.ACTION, "high_risk", "a.py", 1,
+             metadata={"risk_score": 80, "churn_count": 8, "complexity": 10}),
+        Node("action::med_risk", NodeType.ACTION, "med_risk", "b.py", 2,
+             metadata={"risk_score": 30, "churn_count": 3, "complexity": 10}),
+        Node("service::low_risk", NodeType.SERVICE, "low_risk", "c.py", 3,
+             metadata={"risk_score": 5, "churn_count": 1, "complexity": 5}),
+        Node("route::no_risk", NodeType.ROUTE, "no_risk", "d.py", 4,
+             metadata={}),
+        Node("action::zero_risk", NodeType.ACTION, "zero_risk", "e.py", 5,
+             metadata={"risk_score": 0}),
+    ]
+    for n in nodes:
+        g.add_node(n)
+    return g
+
+
+def test_top_risk_sorted_descending():
+    """top_risk() returns nodes sorted by risk_score descending."""
+    g = _make_risk_graph()
+    results = g.top_risk()
+    scores = [n.metadata.get("risk_score", 0) for n in results]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_top_risk_excludes_zero_and_missing():
+    """top_risk() excludes nodes with risk_score == 0 or missing risk_score."""
+    g = _make_risk_graph()
+    results = g.top_risk()
+    ids = {n.id for n in results}
+    assert "action::zero_risk" not in ids
+    assert "route::no_risk" not in ids
+
+
+def test_top_risk_limit():
+    """top_risk() respects the limit parameter."""
+    g = Graph()
+    for i in range(20):
+        g.add_node(Node(f"action::a{i}", NodeType.ACTION, f"a{i}", "x.py", i,
+                        metadata={"risk_score": i + 1}))
+    results = g.top_risk(limit=5)
+    assert len(results) == 5
+    # Should be top 5 highest scores
+    scores = [n.metadata["risk_score"] for n in results]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_top_risk_default_limit_50():
+    """top_risk() default limit is 50."""
+    g = Graph()
+    for i in range(60):
+        g.add_node(Node(f"action::a{i}", NodeType.ACTION, f"a{i}", "x.py", i,
+                        metadata={"risk_score": i + 1}))
+    results = g.top_risk()
+    assert len(results) == 50
+
+
+def test_top_risk_empty_graph():
+    """top_risk() on empty graph returns empty list."""
+    assert Graph().top_risk() == []

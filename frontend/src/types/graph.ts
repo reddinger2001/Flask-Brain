@@ -36,6 +36,10 @@ export interface NodeMetadata {
   
   // Relationship metadata
   relationship_name?: string;
+
+  // Git churn / risk metadata (from GitChurnAnalyzer)
+  churn_count?: number;
+  risk_score?: number;
 }
 
 export interface Node {

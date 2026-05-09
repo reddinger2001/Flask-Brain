@@ -384,6 +384,25 @@ class Graph:
         result.sort(key=lambda n: (-(n.metadata.get("db_op_count") or 0), n.label))
         return result
 
+    def top_risk(self, limit: int = 50) -> list[Node]:
+        """Return the top-N highest-risk nodes sorted by risk_score descending.
+
+        Only nodes with risk_score > 0 are included.  risk_score is set by
+        GitChurnAnalyzer as ``int(complexity * churn_count)``.
+
+        Args:
+            limit: Maximum number of nodes to return (default 50).
+
+        Returns:
+            List of Node objects sorted by risk_score descending.
+        """
+        result = [
+            n for n in self.nodes.values()
+            if (n.metadata.get("risk_score") or 0) > 0
+        ]
+        result.sort(key=lambda n: -(n.metadata.get("risk_score") or 0))
+        return result[:limit]
+
     def dead_weight(
         self,
         node_types: set[NodeType] | None = None,
@@ -486,7 +505,11 @@ class GraphBuilder:
         
         query_tracer = QueryTracer(project_path)
         query_tracer.enrich(self.graph)
-        
+
+        from flask_brain.scanners.git_churn_analyzer import GitChurnAnalyzer
+        git_churn = GitChurnAnalyzer(project_path)
+        git_churn.enrich(self.graph)
+
         return self.graph
 
     def get_graph(self) -> Graph:

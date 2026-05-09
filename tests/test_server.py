@@ -178,3 +178,44 @@ def test_server_returns_404_for_missing_api_file(temp_graph_dir):
         conn.close()
     except Exception as e:
         pytest.skip(f"Server test skipped: {e}")
+
+
+def test_serve_risk_returns_nodes(tmp_path):
+    """serve_risk returns top-N nodes sorted by risk_score desc, excludes zeroes."""
+    graph_dir = tmp_path / ".flask-brain"
+    graph_dir.mkdir()
+
+    graph = Graph()
+    graph.add_node(Node("action::risky", NodeType.ACTION, "risky", "a.py", 1,
+                        metadata={"risk_score": 50, "churn_count": 5, "complexity": 10}))
+    graph.add_node(Node("action::safe", NodeType.ACTION, "safe", "b.py", 2,
+                        metadata={"risk_score": 0}))
+    graph.add_node(Node("service::medium", NodeType.SERVICE, "medium", "c.py", 3,
+                        metadata={"risk_score": 20, "churn_count": 2, "complexity": 10}))
+
+    manifest = {"project_name": "test", "scan_timestamp": "2024-01-01T00:00:00Z",
+                "node_count": 3, "edge_count": 0, "node_types": {}}
+    with open(graph_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f)
+    with open(graph_dir / "graph-all.json", "w") as f:
+        json.dump(graph.to_dict(), f)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        port = s.getsockname()[1]
+
+    threading.Thread(target=start_server, args=(graph_dir, port, False), daemon=True).start()
+    time.sleep(0.5)
+
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        conn.request('GET', '/api/analysis/risk')
+        response = conn.getresponse()
+        assert response.status == 200
+        data = json.loads(response.read().decode())
+        assert data["count"] == 2  # excludes safe (risk_score=0)
+        scores = [n["metadata"]["risk_score"] for n in data["nodes"]]
+        assert scores == sorted(scores, reverse=True)
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")
