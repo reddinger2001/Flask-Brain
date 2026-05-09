@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import cytoscape, { Core } from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
+import dagre from 'cytoscape-dagre';
 import { cytoscapeStyles, NODE_COLORS } from '../utils/cytoscapeStyles';
 import { loadExpansion, saveExpansion } from '../utils/layoutStorage';
 import type { Graph, Node, Manifest } from '../types/graph';
@@ -8,8 +9,19 @@ import type { Graph, Node, Manifest } from '../types/graph';
 const TOGGLEABLE_TYPES = ['route', 'action', 'service', 'model', 'task'] as const;
 type ToggleableType = typeof TOGGLEABLE_TYPES[number];
 
-// Register layout
+// Rank mapping for hierarchical layout
+const RANK_MAP: Record<string, number> = {
+  blueprint: 0,
+  route: 1,
+  action: 2,
+  service: 2,
+  task: 2,
+  model: 3,
+};
+
+// Register layouts
 cytoscape.use(coseBilkent);
+cytoscape.use(dagre);
 
 interface GraphCanvasProps {
   graph: Graph;
@@ -19,22 +31,20 @@ interface GraphCanvasProps {
   manifest?: Manifest | null;
 }
 
-interface Breadcrumb {
-  type: 'all' | 'blueprint' | 'route';
-  id?: string;
-  label: string;
-}
-
 export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, manifest }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const onNodeSelectRef = useRef(onNodeSelect);
-  // Use refs for expanded state so click handlers always read the live value (no stale closure)
-  const expandedBlueprintsRef = useRef<Set<string>>(new Set());
+  
+  // Use refs for all expanded state to avoid stale closures in Cytoscape click handlers
+  const expandedModelsRef = useRef<Set<string>>(new Set());
+  const expandedActionsRef = useRef<Set<string>>(new Set());
   const expandedRoutesRef = useRef<Set<string>>(new Set());
+  const expandedBlueprintsRef = useRef<Set<string>>(new Set());
+  
   const [searchQuery, setSearchQuery] = useState('');
-  const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([{ type: 'all', label: 'All Blueprints' }]);
   const [hiddenTypes, setHiddenTypes] = useState<Set<ToggleableType>>(new Set());
+  const [blueprintList, setBlueprintList] = useState<Array<{ id: string; label: string }>>([]);
 
   // Keep callback ref stable so the Cytoscape init effect doesn't re-run on every render
   useEffect(() => { onNodeSelectRef.current = onNodeSelect; }, [onNodeSelect]);
@@ -48,34 +58,63 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
     });
   }, [manifest?.scan_timestamp]);
 
-  // Initialize Cytoscape with only blueprint nodes — depends only on graph, not callbacks
+  // Initialize Cytoscape with only model nodes and has_relationship edges
   useEffect(() => {
     if (!containerRef.current || !graph) return;
 
-    // Get only blueprint nodes initially
-    const blueprintNodes = graph.nodes.filter(n => n.type === 'blueprint');
+    // Get only model nodes initially
+    const modelNodes = graph.nodes.filter(n => n.type === 'model');
+    
+    // Get has_relationship edges between models
+    const modelIds = new Set(modelNodes.map(n => n.id));
+    const modelEdges = graph.edges.filter(
+      e => e.type === 'has_relationship' && modelIds.has(e.source) && modelIds.has(e.target)
+    );
+
+    // Build blueprint list for the left panel
+    const blueprints = graph.nodes
+      .filter(n => n.type === 'blueprint')
+      .map(n => ({ id: n.id, label: n.label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    setBlueprintList(blueprints);
 
     const cy = cytoscape({
       container: containerRef.current,
       elements: {
-        nodes: blueprintNodes.map(node => ({
+        nodes: modelNodes.map(node => ({
           data: {
             ...node,
+            rank: RANK_MAP[node.type] ?? 2,
           },
         })),
-        edges: [], // No edges initially
+        edges: modelEdges.map(edge => ({
+          data: {
+            id: `${edge.source}-${edge.target}`,
+            source: edge.source,
+            target: edge.target,
+            type: edge.type,
+          },
+        })),
       },
       style: [
         ...cytoscapeStyles,
         // Override node sizes for drill-down view
         {
-          selector: 'node[type="blueprint"]',
+          selector: 'node[type="model"]',
           style: {
-            'width': '100px',
-            'height': '100px',
-            'font-size': '14px',
-            'font-weight': 'bold',
-            'text-max-width': '90px',
+            'width': '70px',
+            'height': '70px',
+            'font-size': '11px',
+            'text-max-width': '60px',
+          },
+        },
+        {
+          selector: 'node[type="action"], node[type="service"], node[type="task"]',
+          style: {
+            'width': '55px',
+            'height': '55px',
+            'font-size': '10px',
+            'text-max-width': '50px',
           },
         },
         {
@@ -88,12 +127,13 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
           },
         },
         {
-          selector: 'node[type="action"], node[type="service"], node[type="model"], node[type="task"]',
+          selector: 'node[type="blueprint"]',
           style: {
-            'width': '55px',
-            'height': '55px',
-            'font-size': '10px',
-            'text-max-width': '50px',
+            'width': '100px',
+            'height': '100px',
+            'font-size': '14px',
+            'font-weight': 'bold',
+            'text-max-width': '90px',
           },
         },
       ],
@@ -257,236 +297,203 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
     waitForCy();
   }, [navigateTo]);
 
-  const handleNavigation = async (node: Node, targetNodeId?: string) => {
+  const handleNavigation = async (node: Node) => {
     const cy = cyRef.current;
     if (!cy) return;
 
-    // If navigating to an action/service, remember it as the target
-    const finalTargetId = targetNodeId || (node.type === 'action' || node.type === 'service' ? node.id : undefined);
-
-    if (node.type === 'route') {
-      // Find which blueprint owns this route (may be null for orphan/test routes)
-      const bpEdge = graph.edges.find(e => e.target === node.id && e.type === 'registers_blueprint');
-      const blueprintId = bpEdge?.source;
-      const blueprintNode = blueprintId ? graph.nodes.find(n => n.id === blueprintId) : undefined;
-
-      if (blueprintId && !expandedBlueprintsRef.current.has(blueprintId)) {
-        // Expand blueprint first, then expand the route after layout settles
-        const routeEdges = graph.edges.filter(
-          e => e.source === blueprintId && e.type === 'registers_blueprint'
-        );
-        const routeIds = new Set(routeEdges.map(e => e.target));
-        const routeChildren = graph.nodes.filter(n => routeIds.has(n.id));
-
-        const toAdd: cytoscape.ElementDefinition[] = [];
-        routeChildren.forEach(route => {
-          if (!cy.getElementById(route.id).length) {
-            toAdd.push({ group: 'nodes', data: { ...route } });
-          }
-        });
-        routeEdges.forEach(edge => {
-          const edgeId = `${edge.source}-${edge.target}`;
-          if (!cy.getElementById(edgeId).length) {
-            toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
-          }
-        });
-        if (toAdd.length) cy.add(toAdd);
-        expandedBlueprintsRef.current.add(blueprintId);
-        runLayout(cy);
-
-        // Wait for layout to finish before expanding route
-        cy.one('layoutstop', () => {
-          expandRouteAndFinish(node.id, blueprintNode, finalTargetId);
-        });
-      } else {
-        // No blueprint (orphan route) or blueprint already expanded — expand route directly
-        expandRouteAndFinish(node.id, blueprintNode, finalTargetId);
-      }
+    if (node.type === 'model') {
+      // Model is already visible — just select it
+      onNodeSelectRef.current(node);
+      cy.getElementById(node.id).addClass('selected');
+      cy.fit(cy.getElementById(node.id).closedNeighborhood(), 80);
     } else if (node.type === 'action' || node.type === 'service') {
-      // Find which route calls this node
-      const callEdge = graph.edges.find(e => e.target === node.id && e.type === 'calls');
-      if (!callEdge) {
-        console.error('No route found for action/service:', node.id);
-        return;
-      }
-
-      const sourceNode = graph.nodes.find(n => n.id === callEdge.source);
-      if (sourceNode && sourceNode.type === 'route') {
-        // Navigate to the route that calls this node, but remember the original target
-        handleNavigation(sourceNode, node.id);
-      } else {
-        // Source might be another action — walk up the chain
-        let currentId = callEdge.source;
-        let routeNode: Node | undefined;
-        const visited = new Set<string>();
-
-        while (currentId && !visited.has(currentId)) {
-          visited.add(currentId);
-          const current = graph.nodes.find(n => n.id === currentId);
-          if (current?.type === 'route') {
-            routeNode = current;
-            break;
+      // Find which model this action uses via uses_model edge
+      const usesModelEdge = graph.edges.find(e => e.source === node.id && e.type === 'uses_model');
+      if (usesModelEdge) {
+        const modelNode = graph.nodes.find(n => n.id === usesModelEdge.target);
+        if (modelNode) {
+          // Expand the model to show the action
+          if (!expandedModelsRef.current.has(modelNode.id)) {
+            await toggleModel(modelNode.id);
           }
-          const parentEdge = graph.edges.find(e => e.target === currentId && e.type === 'calls');
-          currentId = parentEdge?.source || '';
+          // Now select the action
+          onNodeSelectRef.current(node);
+          cy.getElementById(node.id).addClass('selected');
+          cy.fit(cy.getElementById(node.id).closedNeighborhood(), 80);
         }
-
-        if (routeNode) {
-          handleNavigation(routeNode, node.id);
-        } else {
-          console.error('Could not find route for action/service:', node.id);
+      }
+    } else if (node.type === 'route') {
+      // Find which action this route calls via calls edge
+      const callsEdge = graph.edges.find(e => e.source === node.id && e.type === 'calls');
+      if (callsEdge) {
+        const actionNode = graph.nodes.find(n => n.id === callsEdge.target);
+        if (actionNode) {
+          // Navigate to the action first, which will expand the model
+          await handleNavigation(actionNode);
+          // Then expand the action to show the route
+          if (!expandedActionsRef.current.has(actionNode.id)) {
+            await toggleAction(actionNode.id);
+          }
+          // Now select the route
+          onNodeSelectRef.current(node);
+          cy.getElementById(node.id).addClass('selected');
+          cy.fit(cy.getElementById(node.id).closedNeighborhood(), 80);
         }
       }
     }
-  };
-
-  const expandRouteAndFinish = async (routeId: string, blueprintNode: Node | undefined, targetNodeId?: string) => {
-    const cy = cyRef.current;
-    if (!cy) return;
-
-    // Expand route if not already expanded
-    if (!expandedRoutesRef.current.has(routeId)) {
-      const safeId = routeId.replace('::', '_').replace(/\//g, '_').replace(/ /g, '_').replace(/</g, '').replace(/>/g, '').replace(/:/g, '_');
-      try {
-        const response = await fetch(`/api/graph/${safeId}`);
-        if (!response.ok) {
-          console.error(`Failed to fetch route subgraph: ${response.statusText}`);
-          return;
-        }
-
-        const subgraph: Graph = await response.json();
-        const toAdd: cytoscape.ElementDefinition[] = [];
-
-        // Build set of all node IDs that will be present in cy after this add
-        const existingNodeIds = new Set<string>(cy.nodes().map(n => n.id()));
-        subgraph.nodes.forEach(node => {
-          if (!cy.getElementById(node.id).length) {
-            toAdd.push({ group: 'nodes', data: { ...node } });
-            existingNodeIds.add(node.id);
-          }
-        });
-        // Only add edges where both endpoints will exist (no dangling edges)
-        subgraph.edges.forEach(edge => {
-          const edgeId = `${edge.source}-${edge.target}`;
-          if (!cy.getElementById(edgeId).length &&
-              existingNodeIds.has(edge.source) &&
-              existingNodeIds.has(edge.target)) {
-            toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
-          }
-        });
-
-        if (toAdd.length) cy.add(toAdd);
-        expandedRoutesRef.current.add(routeId);
-        runLayout(cy);
-      } catch (error) {
-        console.error('Error fetching route subgraph:', error);
-        return;
-      }
-    }
-
-    // Update breadcrumbs
-    const routeNode = graph.nodes.find(n => n.id === routeId);
-    if (routeNode) {
-      const newBreadcrumbs: Breadcrumb[] = [{ type: 'all', label: 'All Blueprints' }];
-      if (blueprintNode) {
-        newBreadcrumbs.push({ type: 'blueprint', id: blueprintNode.id, label: blueprintNode.label });
-      }
-      newBreadcrumbs.push({ type: 'route', id: routeId, label: routeNode.label });
-      setBreadcrumbs(newBreadcrumbs);
-    }
-
-    // Select the target node (either the specified target or the route itself)
-    const nodeIdToSelect = targetNodeId || routeId;
-    onNodeSelectRef.current(graph.nodes.find(n => n.id === nodeIdToSelect) || null);
-
-    // After a short delay for layout to settle, fit the viewport to the expanded route + its children
-    setTimeout(() => {
-      const cy = cyRef.current;
-      if (!cy) return;
-      const targetElem = cy.getElementById(nodeIdToSelect);
-      const neighborhood = targetElem.closedNeighborhood();
-      if (neighborhood.length > 0) {
-        cy.fit(neighborhood, 80);
-      } else {
-        cy.fit(undefined, 50);
-      }
-      // Flash-highlight the target node so it's obvious
-      cy.getElementById(nodeIdToSelect).addClass('selected');
-    }, 500);
   };
 
   const runLayout = (cy: Core) => {
     cy.layout({
-      name: 'cose-bilkent',
-      animate: 'end' as any,
-      animationDuration: 400,
-      randomize: false,
-      idealEdgeLength: 200,
-      nodeRepulsion: 10000,
+      name: 'dagre',
+      rankDir: 'TB',          // Top → Bottom
+      align: 'UL',
+      nodeSep: 60,
+      rankSep: 120,
       padding: 60,
-      nodeDimensionsIncludeLabels: true,
+      animate: true,
+      animationDuration: 400,
+      fit: true,
     } as any).run();
   };
 
   const handleNodeClick = (node: Node) => {
-    if (node.type === 'blueprint') {
-      toggleBlueprint(node.id);
+    if (node.type === 'model') {
+      toggleModel(node.id);
+    } else if (node.type === 'action' || node.type === 'service') {
+      toggleAction(node.id);
     } else if (node.type === 'route') {
       toggleRoute(node.id);
     }
   };
 
-  const toggleBlueprint = (blueprintId: string) => {
+  const toggleModel = async (modelId: string) => {
     const cy = cyRef.current;
     if (!cy) return;
 
-    const isExpanded = expandedBlueprintsRef.current.has(blueprintId);
-
-    const routeEdges = graph.edges.filter(
-      e => e.source === blueprintId && e.type === 'registers_blueprint'
-    );
-    const routeIds = new Set(routeEdges.map(e => e.target));
-    const routeChildren = graph.nodes.filter(n => routeIds.has(n.id));
+    const isExpanded = expandedModelsRef.current.has(modelId);
 
     if (isExpanded) {
-      routeChildren.forEach(route => {
-        if (expandedRoutesRef.current.has(route.id)) collapseRoute(route.id);
-        cy.getElementById(route.id).remove();
+      // Collapse: remove all actions connected via uses_model
+      const usesModelEdges = graph.edges.filter(
+        e => e.target === modelId && e.type === 'uses_model'
+      );
+      const actionIds = new Set(usesModelEdges.map(e => e.source));
+      
+      // First collapse any expanded actions
+      actionIds.forEach(actionId => {
+        if (expandedActionsRef.current.has(actionId)) {
+          collapseAction(actionId);
+        }
+      });
+
+      // Remove action nodes and edges
+      actionIds.forEach(actionId => {
+        cy.getElementById(actionId).remove();
       });
       cy.edges().forEach(edge => {
-        if (routeIds.has(edge.data('source')) || routeIds.has(edge.data('target'))) {
+        if (actionIds.has(edge.data('source')) || actionIds.has(edge.data('target'))) {
           edge.remove();
         }
       });
-      expandedBlueprintsRef.current.delete(blueprintId);
-      setBreadcrumbs([{ type: 'all', label: 'All Blueprints' }]);
+
+      expandedModelsRef.current.delete(modelId);
     } else {
+      // Expand: add all actions connected via uses_model
+      const usesModelEdges = graph.edges.filter(
+        e => e.target === modelId && e.type === 'uses_model'
+      );
+      const actionIds = new Set(usesModelEdges.map(e => e.source));
+      const actionNodes = graph.nodes.filter(n => actionIds.has(n.id));
+
       const toAdd: cytoscape.ElementDefinition[] = [];
-      routeChildren.forEach(route => {
-        if (!cy.getElementById(route.id).length) {
-          toAdd.push({ group: 'nodes', data: { ...route } });
+      actionNodes.forEach(action => {
+        if (!cy.getElementById(action.id).length) {
+          toAdd.push({ group: 'nodes', data: { ...action, rank: RANK_MAP[action.type] ?? 2 } });
         }
       });
-      routeEdges.forEach(edge => {
+      usesModelEdges.forEach(edge => {
         const edgeId = `${edge.source}-${edge.target}`;
-        if (!cy.getElementById(edgeId).length) {
+        if (!cy.getElementById(edgeId).length &&
+            cy.getElementById(edge.source).length &&
+            cy.getElementById(edge.target).length) {
           toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
         }
       });
       if (toAdd.length) cy.add(toAdd);
-      expandedBlueprintsRef.current.add(blueprintId);
-
-      const blueprintNode = graph.nodes.find(n => n.id === blueprintId);
-      if (blueprintNode) {
-        setBreadcrumbs([
-          { type: 'all', label: 'All Blueprints' },
-          { type: 'blueprint', id: blueprintId, label: blueprintNode.label },
-        ]);
-      }
+      expandedModelsRef.current.add(modelId);
     }
 
     runLayout(cy);
     persistCurrentExpansion();
+  };
+
+  const toggleAction = async (actionId: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const isExpanded = expandedActionsRef.current.has(actionId);
+
+    if (isExpanded) {
+      collapseAction(actionId);
+    } else {
+      // Expand: add all routes connected via calls
+      const callsEdges = graph.edges.filter(
+        e => e.target === actionId && e.type === 'calls'
+      );
+      const routeIds = new Set(callsEdges.map(e => e.source));
+      const routeNodes = graph.nodes.filter(n => routeIds.has(n.id));
+
+      const toAdd: cytoscape.ElementDefinition[] = [];
+      routeNodes.forEach(route => {
+        if (!cy.getElementById(route.id).length) {
+          toAdd.push({ group: 'nodes', data: { ...route, rank: RANK_MAP[route.type] ?? 2 } });
+        }
+      });
+      callsEdges.forEach(edge => {
+        const edgeId = `${edge.source}-${edge.target}`;
+        if (!cy.getElementById(edgeId).length &&
+            cy.getElementById(edge.source).length &&
+            cy.getElementById(edge.target).length) {
+          toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
+        }
+      });
+      if (toAdd.length) cy.add(toAdd);
+      expandedActionsRef.current.add(actionId);
+    }
+
+    runLayout(cy);
+    persistCurrentExpansion();
+  };
+
+  const collapseAction = (actionId: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    // Remove all routes connected to this action
+    const callsEdges = graph.edges.filter(
+      e => e.target === actionId && e.type === 'calls'
+    );
+    const routeIds = new Set(callsEdges.map(e => e.source));
+
+    // First collapse any expanded routes
+    routeIds.forEach(routeId => {
+      if (expandedRoutesRef.current.has(routeId)) {
+        collapseRoute(routeId);
+      }
+    });
+
+    // Remove route nodes and edges
+    routeIds.forEach(routeId => {
+      cy.getElementById(routeId).remove();
+    });
+    cy.edges().forEach(edge => {
+      if (routeIds.has(edge.data('source')) || routeIds.has(edge.data('target'))) {
+        edge.remove();
+      }
+    });
+
+    expandedActionsRef.current.delete(actionId);
   };
 
   const toggleRoute = async (routeId: string) => {
@@ -498,82 +505,148 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
     if (isExpanded) {
       collapseRoute(routeId);
     } else {
-      const safeId = routeId.replace('::', '_').replace(/\//g, '_').replace(/ /g, '_').replace(/</g, '').replace(/>/g, '').replace(/:/g, '_');
-      try {
-        const response = await fetch(`/api/graph/${safeId}`);
-        if (!response.ok) {
-          console.error(`Failed to fetch route subgraph: ${response.statusText}`);
-          return;
-        }
-
-        const subgraph: Graph = await response.json();
-        const toAdd: cytoscape.ElementDefinition[] = [];
-
-        const existingNodeIds2 = new Set<string>(cy.nodes().map(n => n.id()));
-        subgraph.nodes.forEach(node => {
-          if (node.id !== routeId && !cy.getElementById(node.id).length) {
-            toAdd.push({ group: 'nodes', data: { ...node } });
-            existingNodeIds2.add(node.id);
+      // Expand: add the blueprint that registers this route
+      const registersBlueprintEdge = graph.edges.find(
+        e => e.target === routeId && e.type === 'registers_blueprint'
+      );
+      if (registersBlueprintEdge) {
+        const blueprintNode = graph.nodes.find(n => n.id === registersBlueprintEdge.source);
+        if (blueprintNode) {
+          const toAdd: cytoscape.ElementDefinition[] = [];
+          if (!cy.getElementById(blueprintNode.id).length) {
+            toAdd.push({ group: 'nodes', data: { ...blueprintNode } });
           }
-        });
-        subgraph.edges.forEach(edge => {
-          const edgeId = `${edge.source}-${edge.target}`;
+          const edgeId = `${registersBlueprintEdge.source}-${registersBlueprintEdge.target}`;
           if (!cy.getElementById(edgeId).length &&
-              existingNodeIds2.has(edge.source) &&
-              existingNodeIds2.has(edge.target)) {
-            toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
+              cy.getElementById(registersBlueprintEdge.source).length &&
+              cy.getElementById(registersBlueprintEdge.target).length) {
+            toAdd.push({ 
+              group: 'edges', 
+              data: { 
+                id: edgeId, 
+                source: registersBlueprintEdge.source, 
+                target: registersBlueprintEdge.target, 
+                type: registersBlueprintEdge.type 
+              } 
+            });
           }
-        });
-
-        if (toAdd.length) cy.add(toAdd);
-        expandedRoutesRef.current.add(routeId);
-
-        // Breadcrumb — look up blueprint via edges since metadata.blueprint is a name not an ID
-        const routeNode = graph.nodes.find(n => n.id === routeId);
-        const bpEdge = graph.edges.find(e => e.target === routeId && e.type === 'registers_blueprint');
-        const blueprintNode = bpEdge ? graph.nodes.find(n => n.id === bpEdge.source) : null;
-
-        if (routeNode) {
-          const newBreadcrumbs: Breadcrumb[] = [{ type: 'all', label: 'All Blueprints' }];
-          if (blueprintNode) {
-            newBreadcrumbs.push({ type: 'blueprint', id: blueprintNode.id, label: blueprintNode.label });
-          }
-          newBreadcrumbs.push({ type: 'route', id: routeId, label: routeNode.label });
-          setBreadcrumbs(newBreadcrumbs);
+          if (toAdd.length) cy.add(toAdd);
+          expandedRoutesRef.current.add(routeId);
         }
-
-        runLayout(cy);
-        persistCurrentExpansion();
-      } catch (error) {
-        console.error('Error fetching route subgraph:', error);
       }
     }
+
+    runLayout(cy);
+    persistCurrentExpansion();
   };
 
   const collapseRoute = (routeId: string) => {
     const cy = cyRef.current;
     if (!cy) return;
 
-    const connectedNodes = cy.getElementById(routeId).neighborhood('node');
-    connectedNodes.forEach(node => {
-      const nodeType = node.data('type');
-      if (['action', 'service', 'model', 'task'].includes(nodeType)) {
-        node.remove();
+    // Remove the blueprint connected to this route
+    const registersBlueprintEdge = graph.edges.find(
+      e => e.target === routeId && e.type === 'registers_blueprint'
+    );
+    if (registersBlueprintEdge) {
+      const blueprintId = registersBlueprintEdge.source;
+      // Only remove the blueprint if no other expanded routes reference it
+      const otherExpandedRoutes = [...expandedRoutesRef.current].filter(rid => rid !== routeId);
+      const otherRoutesBlueprintEdges = graph.edges.filter(
+        e => e.type === 'registers_blueprint' && 
+             e.source === blueprintId && 
+             otherExpandedRoutes.includes(e.target)
+      );
+      if (otherRoutesBlueprintEdges.length === 0) {
+        cy.getElementById(blueprintId).remove();
+        cy.edges().forEach(edge => {
+          if (edge.data('source') === blueprintId || edge.data('target') === blueprintId) {
+            edge.remove();
+          }
+        });
       }
-    });
+    }
 
     expandedRoutesRef.current.delete(routeId);
+  };
 
-    const bpEdge = graph.edges.find(e => e.target === routeId && e.type === 'registers_blueprint');
-    const blueprintNode = bpEdge ? graph.nodes.find(n => n.id === bpEdge.source) : null;
+  const toggleBlueprint = (blueprintId: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
 
-    if (blueprintNode && expandedBlueprintsRef.current.has(blueprintNode.id)) {
-      setBreadcrumbs([
-        { type: 'all', label: 'All Blueprints' },
-        { type: 'blueprint', id: blueprintNode.id, label: blueprintNode.label },
-      ]);
+    const isExpanded = expandedBlueprintsRef.current.has(blueprintId);
+
+    if (isExpanded) {
+      // Collapse: remove all routes registered by this blueprint
+      const registersBlueprintEdges = graph.edges.filter(
+        e => e.source === blueprintId && e.type === 'registers_blueprint'
+      );
+      const routeIds = new Set(registersBlueprintEdges.map(e => e.target));
+
+      // First collapse any expanded routes
+      routeIds.forEach(routeId => {
+        if (expandedRoutesRef.current.has(routeId)) {
+          collapseRoute(routeId);
+        }
+      });
+
+      // Remove route nodes and edges
+      routeIds.forEach(routeId => {
+        cy.getElementById(routeId).remove();
+      });
+      cy.edges().forEach(edge => {
+        if (routeIds.has(edge.data('source')) || routeIds.has(edge.data('target'))) {
+          edge.remove();
+        }
+      });
+
+      // Remove the blueprint node itself
+      cy.getElementById(blueprintId).remove();
+
+      expandedBlueprintsRef.current.delete(blueprintId);
     } else {
-      setBreadcrumbs([{ type: 'all', label: 'All Blueprints' }]);
+      // Expand: add the blueprint and all its routes
+      const blueprintNode = graph.nodes.find(n => n.id === blueprintId);
+      if (!blueprintNode) return;
+
+      const registersBlueprintEdges = graph.edges.filter(
+        e => e.source === blueprintId && e.type === 'registers_blueprint'
+      );
+      const routeIds = new Set(registersBlueprintEdges.map(e => e.target));
+      const routeNodes = graph.nodes.filter(n => routeIds.has(n.id));
+
+      const toAdd: cytoscape.ElementDefinition[] = [];
+      
+      // Add blueprint node
+      if (!cy.getElementById(blueprintNode.id).length) {
+        toAdd.push({ group: 'nodes', data: { ...blueprintNode, rank: RANK_MAP[blueprintNode.type] ?? 2 } });
+      }
+
+      // Add route nodes
+      routeNodes.forEach(route => {
+        if (!cy.getElementById(route.id).length) {
+          toAdd.push({ group: 'nodes', data: { ...route, rank: RANK_MAP[route.type] ?? 2 } });
+        }
+      });
+
+      // Add edges (only if both endpoints exist)
+      registersBlueprintEdges.forEach(edge => {
+        const edgeId = `${edge.source}-${edge.target}`;
+        if (!cy.getElementById(edgeId).length) {
+          toAdd.push({ 
+            group: 'edges', 
+            data: { 
+              id: edgeId, 
+              source: edge.source, 
+              target: edge.target, 
+              type: edge.type 
+            } 
+          });
+        }
+      });
+
+      if (toAdd.length) cy.add(toAdd);
+      expandedBlueprintsRef.current.add(blueprintId);
     }
 
     runLayout(cy);
@@ -584,13 +657,20 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
     const cy = cyRef.current;
     if (!cy) return;
 
+    // Remove all non-model nodes
     cy.nodes().forEach(node => {
-      if (node.data('type') !== 'blueprint') node.remove();
+      if (node.data('type') !== 'model') node.remove();
     });
 
-    expandedBlueprintsRef.current.clear();
+    // Remove all non-has_relationship edges
+    cy.edges().forEach(edge => {
+      if (edge.data('type') !== 'has_relationship') edge.remove();
+    });
+
+    expandedModelsRef.current.clear();
+    expandedActionsRef.current.clear();
     expandedRoutesRef.current.clear();
-    setBreadcrumbs([{ type: 'all', label: 'All Blueprints' }]);
+    expandedBlueprintsRef.current.clear();
 
     runLayout(cy);
   };
@@ -606,21 +686,41 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
 
   return (
     <div className="relative w-full h-full">
-      {/* Breadcrumb */}
-      <div className="absolute top-4 left-4 z-10 bg-white dark:bg-gray-800 rounded-lg shadow-lg px-4 py-2">
-        <div className="flex items-center gap-2 text-sm">
-          {breadcrumbs.map((crumb, index) => (
-            <div key={index} className="flex items-center gap-2">
-              {index > 0 && (
-                <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              )}
-              <span className={index === breadcrumbs.length - 1 ? 'font-semibold text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}>
-                {crumb.label}
-              </span>
-            </div>
-          ))}
+      {/* Blueprint panel (left side) */}
+      <div className="absolute top-4 left-4 z-10 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-4" style={{ maxWidth: '250px' }}>
+        {/* Reset button */}
+        <button
+          onClick={handleReset}
+          className="w-full mb-3 px-3 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-medium transition-colors"
+          title="Reset to models only"
+        >
+          Reset
+        </button>
+
+        {/* Blueprint list */}
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 font-medium uppercase tracking-wide">
+            Blueprints
+          </p>
+          <div className="flex flex-col gap-1.5 overflow-y-auto" style={{ maxHeight: '60vh' }}>
+            {blueprintList.map(bp => {
+              const isOverlaid = expandedBlueprintsRef.current.has(bp.id);
+              return (
+                <button
+                  key={bp.id}
+                  onClick={() => toggleBlueprint(bp.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all text-left ${
+                    isOverlaid
+                      ? 'bg-teal-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  }`}
+                  title={isOverlaid ? `Hide ${bp.label}` : `Show ${bp.label}`}
+                >
+                  {bp.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -690,16 +790,6 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-            </svg>
-          </button>
-
-          <button
-            onClick={handleReset}
-            className="px-3 py-2 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-white transition-colors"
-            title="Reset to blueprints"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
         </div>
