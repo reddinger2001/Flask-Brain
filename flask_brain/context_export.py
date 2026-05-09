@@ -209,7 +209,16 @@ def _db_operations(nodes: list["Node"]) -> str:
         return ""
     lines = ["## DB Operations"]
     for label, ops in sorted(rows, key=lambda r: r[0]):
-        ops_str = ", ".join(ops) if isinstance(ops, list) else str(ops)
+        if isinstance(ops, list):
+            parts = []
+            for op in ops:
+                if isinstance(op, dict):
+                    parts.append(f"{op.get('type', '?')} {op.get('pattern', '')}".strip())
+                else:
+                    parts.append(str(op))
+            ops_str = ", ".join(parts)
+        else:
+            ops_str = str(ops)
         lines.append(f"- **{label}:** {ops_str}")
     return "\n".join(lines)
 

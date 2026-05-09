@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import cytoscape, { Core } from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
-import { cytoscapeStyles } from '../utils/cytoscapeStyles';
+import { cytoscapeStyles, NODE_COLORS } from '../utils/cytoscapeStyles';
 import { loadExpansion, saveExpansion } from '../utils/layoutStorage';
 import type { Graph, Node, Manifest } from '../types/graph';
+
+const TOGGLEABLE_TYPES = ['route', 'action', 'service', 'model', 'task'] as const;
+type ToggleableType = typeof TOGGLEABLE_TYPES[number];
 
 // Register layout
 cytoscape.use(coseBilkent);
@@ -31,6 +34,7 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
   const expandedRoutesRef = useRef<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([{ type: 'all', label: 'All Blueprints' }]);
+  const [hiddenTypes, setHiddenTypes] = useState<Set<ToggleableType>>(new Set());
 
   // Keep callback ref stable so the Cytoscape init effect doesn't re-run on every render
   useEffect(() => { onNodeSelectRef.current = onNodeSelect; }, [onNodeSelect]);
@@ -123,11 +127,10 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
       handleNodeClick(node);
     });
 
-    // Handle background tap (collapse to blueprints only)
+    // Handle background tap — just deselect, don't collapse
     cy.on('tap', (event) => {
       if (event.target === cy) {
         onNodeSelectRef.current(null);
-        collapseAll();
       }
     });
 
@@ -215,6 +218,21 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
       });
     }
   }, [searchQuery]);
+
+  // Handle node type visibility toggling
+  useEffect(() => {
+    if (!cyRef.current) return;
+    const cy = cyRef.current;
+    TOGGLEABLE_TYPES.forEach(type => {
+      cy.nodes(`[type="${type}"]`).style('display', hiddenTypes.has(type) ? 'none' : 'element');
+    });
+    // Hide edges where either endpoint is hidden
+    cy.edges().forEach(edge => {
+      const srcHidden = edge.source().style('display') === 'none';
+      const tgtHidden = edge.target().style('display') === 'none';
+      edge.style('display', srcHidden || tgtHidden ? 'none' : 'element');
+    });
+  }, [hiddenTypes]);
 
   // Handle navigation from other tabs (RouteMap, Heatmap)
   useEffect(() => {
@@ -626,6 +644,37 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
             >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
+          </div>
+        </div>
+
+        {/* Node type filter chips */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-2">
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1.5 font-medium uppercase tracking-wide">Show / Hide</p>
+          <div className="flex flex-wrap gap-1">
+            {TOGGLEABLE_TYPES.map(type => {
+              const hidden = hiddenTypes.has(type);
+              return (
+                <button
+                  key={type}
+                  onClick={() => setHiddenTypes(prev => {
+                    const next = new Set(prev);
+                    if (next.has(type)) next.delete(type); else next.add(type);
+                    return next;
+                  })}
+                  className="px-2 py-0.5 rounded-full text-xs font-semibold border transition-all"
+                  style={{
+                    backgroundColor: hidden ? 'transparent' : (NODE_COLORS as any)[type] + '33',
+                    borderColor: (NODE_COLORS as any)[type],
+                    color: hidden ? '#888' : (NODE_COLORS as any)[type],
+                    textDecoration: hidden ? 'line-through' : 'none',
+                    opacity: hidden ? 0.5 : 1,
+                  }}
+                  title={hidden ? `Show ${type}s` : `Hide ${type}s`}
+                >
+                  {type}
+                </button>
+              );
+            })}
           </div>
         </div>
 

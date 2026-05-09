@@ -39,14 +39,15 @@ export function Sidebar({ node, onClose, onNavigate }: SidebarProps) {
       const response = await fetch(`/api/context?nodeId=${encodeURIComponent(node.id)}`);
       if (!response.ok) throw new Error('Failed to fetch context');
       
-      const context = await response.text();
+      const data = await response.json();
+      const context = data.context ?? JSON.stringify(data, null, 2);
       await navigator.clipboard.writeText(context);
       
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
     } catch (error) {
       console.error('Error copying context:', error);
-      alert('Failed to copy context. This feature may not be implemented yet.');
+      alert('Failed to copy AI context: ' + (error instanceof Error ? error.message : String(error)));
     }
   };
 
