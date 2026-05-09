@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import cytoscape, { Core } from 'cytoscape';
 import coseBilkent from 'cytoscape-cose-bilkent';
 import { cytoscapeStyles } from '../utils/cytoscapeStyles';
-import type { Graph, Node } from '../types/graph';
+import { loadExpansion, saveExpansion } from '../utils/layoutStorage';
+import type { Graph, Node, Manifest } from '../types/graph';
 
 // Register layout
 cytoscape.use(coseBilkent);
@@ -12,6 +13,7 @@ interface GraphCanvasProps {
   onNodeSelect: (node: Node | null) => void;
   selectedNodeId: string | null;
   navigateTo?: Node | null;
+  manifest?: Manifest | null;
 }
 
 interface Breadcrumb {
@@ -20,7 +22,7 @@ interface Breadcrumb {
   label: string;
 }
 
-export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo }: GraphCanvasProps) {
+export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, manifest }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const onNodeSelectRef = useRef(onNodeSelect);
@@ -32,6 +34,15 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo }:
 
   // Keep callback ref stable so the Cytoscape init effect doesn't re-run on every render
   useEffect(() => { onNodeSelectRef.current = onNodeSelect; }, [onNodeSelect]);
+
+  // Persist current expansion state to localStorage whenever it changes
+  const persistCurrentExpansion = useCallback(() => {
+    if (!manifest?.scan_timestamp) return;
+    saveExpansion(manifest.scan_timestamp, {
+      blueprints: [...expandedBlueprintsRef.current],
+      routes: [...expandedRoutesRef.current],
+    });
+  }, [manifest?.scan_timestamp]);
 
   // Initialize Cytoscape with only blueprint nodes — depends only on graph, not callbacks
   useEffect(() => {
@@ -91,6 +102,19 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo }:
 
     // Apply initial layout
     runLayout(cy);
+
+    // Restore persisted expansion after the initial layout settles
+    cy.one('layoutstop', () => {
+      if (!manifest?.scan_timestamp) return;
+      const persisted = loadExpansion(manifest.scan_timestamp);
+      if (!persisted) return;
+      // Re-expand saved blueprints
+      persisted.blueprints.forEach(bpId => {
+        if (graph.nodes.some(n => n.id === bpId)) {
+          toggleBlueprint(bpId);
+        }
+      });
+    });
 
     // Handle node clicks
     cy.on('tap', 'node', (event) => {
@@ -444,6 +468,7 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo }:
     }
 
     runLayout(cy);
+    persistCurrentExpansion();
   };
 
   const toggleRoute = async (routeId: string) => {
@@ -500,6 +525,7 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo }:
         }
 
         runLayout(cy);
+        persistCurrentExpansion();
       } catch (error) {
         console.error('Error fetching route subgraph:', error);
       }
@@ -533,6 +559,7 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo }:
     }
 
     runLayout(cy);
+    persistCurrentExpansion();
   };
 
   const collapseAll = () => {

@@ -170,6 +170,7 @@ function App() {
               onNodeSelect={handleNodeSelect}
               selectedNodeId={selectedNode?.id || null}
               navigateTo={navigateToNode}
+              manifest={manifest}
             />
           )}
           {activeTab === 'routes' && (
