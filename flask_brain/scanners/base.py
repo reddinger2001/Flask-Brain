@@ -30,9 +30,23 @@ class BaseScanner(ABC):
             # Skip files that can't be parsed
             return None
     
+    # Directories to exclude from scanning
+    EXCLUDED_DIRS = {
+        '.venv', 'venv', 'env', '.env',
+        'site-packages', '__pycache__', '.git',
+        'node_modules', '.tox', 'dist', 'build',
+        'migrations',  # alembic migrations rarely need scanning
+    }
+
     def _get_python_files(self) -> list[Path]:
-        """Get all Python files in the project."""
-        return list(self.project_path.rglob('*.py'))
+        """Get all Python files in the project, excluding virtual envs and caches."""
+        files = []
+        for path in self.project_path.rglob('*.py'):
+            # Skip if any part of the path is an excluded directory
+            if any(part in self.EXCLUDED_DIRS for part in path.parts):
+                continue
+            files.append(path)
+        return files
     
     def _get_relative_path(self, file_path: Path) -> str:
         """Get path relative to project root."""

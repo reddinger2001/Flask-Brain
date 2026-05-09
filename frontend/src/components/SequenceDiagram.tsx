@@ -12,8 +12,8 @@ export function SequenceDiagram({ routeNode }: SequenceDiagramProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   
-  // Fetch the per-route subgraph
-  const safeRouteId = encodeURIComponent(routeNode.id.replace(/[^a-zA-Z0-9_]/g, '_'));
+  // Use same safeId derivation as GraphCanvas to match file names written by graph.py
+  const safeRouteId = routeNode.id.replace('::', '_').replace(/\//g, '_').replace(/ /g, '_');
   const { graph, loading } = useGraph(`/api/graph/${safeRouteId}`);
 
   useEffect(() => {

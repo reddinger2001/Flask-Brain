@@ -92,12 +92,16 @@ class ModelScanner(BaseScanner):
             }
         )
         
-        # Create relationship edges
+        # Create relationship edges — skip self-loops
         edges = []
         for rel in relationships:
+            source = f"model::{model_name}"
+            target = f"model::{rel['target']}"
+            if source == target:
+                continue  # self-referential FK — skip, Cytoscape can't draw it
             edge = Edge(
-                source=f"model::{model_name}",
-                target=f"model::{rel['target']}",
+                source=source,
+                target=target,
                 type=EdgeType.HAS_RELATIONSHIP,
                 metadata={"relationship_name": rel["name"]}
             )

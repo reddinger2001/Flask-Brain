@@ -6,7 +6,7 @@ import mimetypes
 import subprocess
 import sys
 from pathlib import Path
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 import threading
 from flask_brain.context_export import export_context
@@ -282,7 +282,7 @@ def start_server(graph_dir: Path, port: int = 7891, open_browser: bool = True,
                  project_path: Path = None):
     """Start the HTTP server."""
     handler = create_handler(graph_dir, project_path=project_path)
-    server = HTTPServer(("localhost", port), handler)
+    server = ThreadingHTTPServer(("localhost", port), handler)
     
     url = f"http://localhost:{port}"
     print(f"Flask Brain server running at {url}")
