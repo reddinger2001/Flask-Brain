@@ -1,0 +1,20 @@
+{
+  "project_name": "FlaskBrain",
+  "project_root": "/Volumes/DevEnvironment/projects/FlaskBrain",
+  "storage_root": "/Volumes/DevEnvironment/projects/FlaskBrain",
+  "stack": "python-cli-tool",
+  "paths": {
+    "source": "flask_brain/",
+    "tests": "tests/",
+    "docs": "."
+  },
+  "domain": "Static analysis tool that scans Flask projects and generates interactive architecture visualizations",
+  "test_command": "pytest tests/ -v",
+  "lint_command": "ruff check .",
+  "git": {
+    "forgejo_url": "http://192.168.1.127:3000",
+    "forgejo_repo": "Chris/flask-brain",
+    "default_branch": "main",
+    "credentials_file": "/Users/c-reddinger/.config/opencode/forgejo-credentials.sh"
+  }
+}
