@@ -168,3 +168,72 @@ def test_view_tracer_works_across_all_fixture_apps(flat_app_path, factory_app_pa
             assert node.label
             assert node.file_path
             assert node.line_number > 0
+
+
+def test_view_tracer_creates_route_to_action_edges(blueprint_app_path):
+    """Test that edges are created from route nodes to action nodes."""
+    tracer = ViewFunctionTracer(blueprint_app_path)
+    nodes, edges = tracer.scan()
+    
+    # Should have edges from routes to actions
+    # For example: route::GET /users -> action::list_users
+    route_to_action_edges = [e for e in edges if e.source.startswith("route::") and e.target.startswith("action::")]
+    assert len(route_to_action_edges) > 0, "No route->action edges found"
+    
+    # Verify specific edges exist for known view functions
+    edge_map = {e.source: e.target for e in route_to_action_edges}
+    
+    # list_users is at GET /users (with /users prefix from blueprint)
+    assert any("GET /users/" in source and "action::list_users" in target 
+               for source, target in edge_map.items()), "Missing edge for list_users"
+    
+    # get_user is at GET /users/<int:user_id>
+    assert any("GET /users/" in source and "action::get_user" in target 
+               for source, target in edge_map.items()), "Missing edge for get_user"
+    
+    # create_user is at POST /users/
+    assert any("POST /users/" in source and "action::create_user" in target 
+               for source, target in edge_map.items()), "Missing edge for create_user"
+
+
+def test_view_tracer_filters_flask_builtins(blueprint_app_path):
+    """Test that Flask builtin functions are not treated as service calls."""
+    tracer = ViewFunctionTracer(blueprint_app_path)
+    nodes, edges = tracer.scan()
+    
+    # Should NOT create edges to Flask builtins
+    service_edges = [e for e in edges if e.target.startswith("service::")]
+    
+    # Check that common Flask builtins are NOT in the edges as standalone calls
+    # We check for exact matches or as the last component after ::
+    flask_builtins = ['jsonify', 'render_template', 'redirect', 'url_for', 'abort', 
+                      'request', 'session', 'flash', 'send_file', 'make_response']
+    
+    for builtin in flask_builtins:
+        # Check if builtin appears as a standalone service or as the final component
+        assert not any(e.target == f"service::{builtin}" or e.target.endswith(f".{builtin}") 
+                       for e in service_edges), \
+            f"Flask builtin '{builtin}' should not appear as a service edge"
+
+
+def test_view_tracer_creates_uses_model_edges_for_models(blueprint_app_path):
+    """Test that model constructor calls create USES_MODEL edges, not CALLS edges."""
+    from flask_brain.graph import EdgeType
+    
+    tracer = ViewFunctionTracer(blueprint_app_path)
+    nodes, edges = tracer.scan()
+    
+    # Find edges from actions
+    action_edges = [e for e in edges if e.source.startswith("action::")]
+    
+    # Model references should use USES_MODEL edge type, not CALLS
+    model_edges = [e for e in action_edges if "User" in e.target or "Order" in e.target]
+    
+    for edge in model_edges:
+        # If it's a model reference, it should be USES_MODEL
+        if edge.target.startswith("model::"):
+            assert edge.type == EdgeType.USES_MODEL, \
+                f"Model edge {edge.source} -> {edge.target} should use USES_MODEL, not {edge.type}"
+        # Should NOT be a service call to a model
+        assert not (edge.target.startswith("service::") and ("User" in edge.target or "Order" in edge.target)), \
+            f"Model should not appear as service: {edge.target}"

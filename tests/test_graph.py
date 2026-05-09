@@ -311,3 +311,30 @@ def test_graph_builder_merge_multiple_scanners():
     assert len(graph.nodes) == 1
     node = graph.get_node("route::GET /users")
     assert "complexity" in node.metadata
+
+
+def test_graph_write_includes_scan_timestamp():
+    """Test that manifest includes a valid scan_timestamp."""
+    from datetime import datetime
+    
+    graph = Graph()
+    route_node = Node("route::GET /users", NodeType.ROUTE, "GET /users", "/app/routes.py", 10)
+    graph.add_node(route_node)
+    
+    # Write to temp directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_dir = Path(tmpdir)
+        graph.write(output_dir)
+        
+        # Check manifest has scan_timestamp
+        manifest_path = output_dir / "manifest.json"
+        assert manifest_path.exists()
+        
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+            assert manifest["scan_timestamp"] is not None
+            assert manifest["scan_timestamp"] != ""
+            
+            # Verify it's a valid ISO datetime
+            timestamp = datetime.fromisoformat(manifest["scan_timestamp"].replace('Z', '+00:00'))
+            assert timestamp is not None

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
 import json
 
 
@@ -152,7 +153,7 @@ class Graph:
         # Write manifest
         manifest = {
             "project_name": "scanned_project",
-            "scan_timestamp": None,  # Will be set by scanner
+            "scan_timestamp": datetime.now(timezone.utc).isoformat(),
             "node_count": len(self.nodes),
             "edge_count": len(self.edges),
             "node_types": self._count_node_types(),
