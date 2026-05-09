@@ -52,16 +52,18 @@ def scan(
     # Start server if requested
     if not no_serve:
         console.print(f"\n[bold blue]Starting HTTP server on port {port}...[/bold blue]")
-        start_server(output_dir, port=port, open_browser=True)
-    
-    if watch:
-        console.print("[yellow]Watch mode not yet implemented[/yellow]")
+        if watch:
+            console.print("[dim]Watch mode: auto-rescan on .py changes[/dim]")
+        start_server(output_dir, port=port, open_browser=True, watch=watch)
+    elif watch:
+        console.print("[yellow]--watch requires server (remove --no-serve)[/yellow]")
 
 
 @app.command()
 def serve(
     path: Path = typer.Argument(..., help="Path to Flask project (with .flask-brain/ directory)"),
     port: int = typer.Option(7891, "--port", "-p", help="Port for HTTP server"),
+    watch: bool = typer.Option(False, "--watch", "-w", help="Watch for file changes and auto-rescan"),
 ):
     """Start HTTP server to view previously scanned project."""
     console.print(f"[bold green]Starting server for:[/bold green] {path}")
@@ -73,7 +75,9 @@ def serve(
         console.print("Run 'flask-brain scan' first to generate graph data.")
         raise typer.Exit(1)
     
-    start_server(graph_dir, port=port, open_browser=True)
+    if watch:
+        console.print("[dim]Watch mode: auto-rescan on .py changes[/dim]")
+    start_server(graph_dir, port=port, open_browser=True, project_path=path, watch=watch)
 
 
 @app.command()

@@ -12,6 +12,34 @@ import threading
 from flask_brain.context_export import export_context
 from flask_brain.graph import Graph
 
+# ── SSE subscriber registry ──────────────────────────────────────────────────
+# Each entry is a threading.Event + queue-like list for SSE messages.
+# Keyed by subscriber id; handlers register themselves and deregister on disconnect.
+_sse_subscribers: dict = {}
+_sse_lock = threading.Lock()
+
+
+def _register_subscriber(sub_id: str) -> list:
+    """Register an SSE subscriber. Returns the message queue (list)."""
+    q: list = []
+    with _sse_lock:
+        _sse_subscribers[sub_id] = q
+    return q
+
+
+def _deregister_subscriber(sub_id: str):
+    with _sse_lock:
+        _sse_subscribers.pop(sub_id, None)
+
+
+def broadcast_event(event: str, data: dict):
+    """Broadcast an SSE event to all connected subscribers."""
+    payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+    with _sse_lock:
+        queues = list(_sse_subscribers.values())
+    for q in queues:
+        q.append(payload)
+
 
 class FlaskBrainHandler(SimpleHTTPRequestHandler):
     """HTTP request handler for Flask Brain."""
@@ -149,25 +177,39 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             self._send_json_error(500, str(e))
 
     def serve_sse(self):
-        """Serve Server-Sent Events stream — sends keepalives, no watch mode yet."""
+        """Serve Server-Sent Events stream with watch-mode broadcast support."""
+        import time
+        import uuid
+        sub_id = str(uuid.uuid4())
+        queue = _register_subscriber(sub_id)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Access-Control-Allow-Origin", "*")
-        # Tell the browser not to retry aggressively (retry: 0 disables auto-reconnect)
         self.end_headers()
         try:
-            # Send a comment ping every 15 s to keep the connection alive.
-            # The browser will hold one open connection and stop hammering us.
-            self.wfile.write(b"retry: 0\n: connected\n\n")
+            self.wfile.write(b"retry: 5000\n: connected\n\n")
             self.wfile.flush()
-            import time
             while True:
-                time.sleep(15)
-                self.wfile.write(b": ping\n\n")
-                self.wfile.flush()
+                if queue:
+                    msg = queue.pop(0)
+                    self.wfile.write(msg)
+                    self.wfile.flush()
+                else:
+                    time.sleep(0.25)
+                    # Send keepalive ping every ~15 s (60 * 0.25 s)
+                    # Using a counter to avoid importing time twice
+                    if not hasattr(self, '_ping_counter'):
+                        self._ping_counter = 0
+                    self._ping_counter += 1
+                    if self._ping_counter >= 60:
+                        self._ping_counter = 0
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
+        finally:
+            _deregister_subscriber(sub_id)
 
     def _send_json(self, data: dict):
         """Send a JSON response."""
@@ -279,14 +321,16 @@ def create_handler(graph_dir: Path, viewer_dir: Path = None, project_path: Path 
 
 
 def start_server(graph_dir: Path, port: int = 7891, open_browser: bool = True,
-                 project_path: Path = None):
-    """Start the HTTP server."""
+                 project_path: Path = None, watch: bool = False):
+    """Start the HTTP server, optionally with file-watch mode."""
     handler = create_handler(graph_dir, project_path=project_path)
     server = ThreadingHTTPServer(("localhost", port), handler)
     
     url = f"http://localhost:{port}"
     print(f"Flask Brain server running at {url}")
     print(f"Serving graph data from: {graph_dir}")
+    if watch:
+        print(f"Watch mode enabled — auto-refresh on .py changes (2 s debounce)")
     print("Press Ctrl+C to stop")
     
     if open_browser:
@@ -298,8 +342,33 @@ def start_server(graph_dir: Path, port: int = 7891, open_browser: bool = True,
         
         threading.Thread(target=open_browser_delayed, daemon=True).start()
     
+    # Start watcher if requested
+    _watcher = None
+    if watch:
+        from flask_brain.watcher import ProjectWatcher
+        from flask_brain.graph import GraphBuilder
+
+        _proj = project_path or graph_dir.parent
+
+        def _on_change(changed_path: str):
+            print(f"[watch] change detected: {changed_path} — rescanning…")
+            try:
+                builder = GraphBuilder()
+                graph = builder.build(_proj)
+                graph.write(graph_dir)
+                broadcast_event("graph-updated", {"path": changed_path})
+                print("[watch] rescan complete — clients notified")
+            except Exception as e:
+                print(f"[watch] rescan failed: {e}")
+
+        _watcher = ProjectWatcher(_proj, _on_change)
+        _watcher.start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down server...")
         server.shutdown()
+    finally:
+        if _watcher is not None:
+            _watcher.stop()

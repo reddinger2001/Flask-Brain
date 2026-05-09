@@ -4,8 +4,15 @@ export function useSSE(onRescan: () => void) {
   const connect = useCallback(() => {
     const eventSource = new EventSource('/api/events');
     
+    // Legacy event name kept for compatibility
     eventSource.addEventListener('rescan', () => {
       console.log('Rescan event received');
+      onRescan();
+    });
+
+    // Watch-mode: server broadcasts this after auto-rescan
+    eventSource.addEventListener('graph-updated', (e) => {
+      console.log('Graph updated by watcher:', (e as MessageEvent).data);
       onRescan();
     });
     
@@ -27,3 +34,4 @@ export function useSSE(onRescan: () => void) {
     };
   }, [connect]);
 }
+
