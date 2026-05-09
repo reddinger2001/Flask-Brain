@@ -268,7 +268,7 @@ def test_graph_write():
         assert (output_dir / "graph-routes.json").exists()
         
         # Check per-route graph exists
-        route_files = list(output_dir.glob("graph-route__*.json"))
+        route_files = list(output_dir.glob("graph-route_*.json"))
         assert len(route_files) == 1
 
 
