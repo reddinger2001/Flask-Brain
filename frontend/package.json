@@ -1,0 +1,30 @@
+{
+  "name": "flask-brain-frontend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "cytoscape": "^3.28.1",
+    "cytoscape-dagre": "^2.5.0",
+    "cytoscape-cose-bilkent": "^4.1.0",
+    "dagre": "^0.8.5",
+    "mermaid": "^10.9.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@types/cytoscape": "^3.19.16",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.2.0",
+    "tailwindcss": "^3.4.1",
+    "postcss": "^8.4.38",
+    "autoprefixer": "^10.4.19"
+  }
+}

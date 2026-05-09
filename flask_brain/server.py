@@ -2,6 +2,7 @@
 
 import json
 import webbrowser
+import mimetypes
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -11,8 +12,9 @@ import threading
 class FlaskBrainHandler(SimpleHTTPRequestHandler):
     """HTTP request handler for Flask Brain."""
     
-    def __init__(self, *args, graph_dir: Path = None, **kwargs):
+    def __init__(self, *args, graph_dir: Path = None, viewer_dir: Path = None, **kwargs):
         self.graph_dir = graph_dir or Path.cwd() / ".flask-brain"
+        self.viewer_dir = viewer_dir or Path(__file__).parent / "viewer" / "dist"
         super().__init__(*args, **kwargs)
     
     def do_GET(self):
@@ -23,11 +25,14 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
         # Serve API endpoints
         if path.startswith("/api/"):
             self.serve_api(path, parsed_path.query)
-        # Serve root HTML
-        elif path == "/" or path == "/index.html":
+        # Serve static assets
+        elif path.startswith("/assets/"):
+            self.serve_static(path)
+        # Serve root HTML or SPA routes
+        elif path == "/" or path == "/index.html" or not "." in path.split("/")[-1]:
             self.serve_html()
         else:
-            self.send_error(404, "Not Found")
+            self.serve_static(path)
     
     def serve_api(self, path: str, query: str):
         """Serve API endpoints."""
@@ -59,177 +64,65 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, f"Error reading file: {str(e)}")
     
-    def serve_html(self):
-        """Serve the placeholder HTML viewer."""
-        html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flask Brain - Architecture Visualizer</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            padding: 40px;
-            max-width: 1200px;
-            width: 100%;
-        }
-        h1 {
-            color: #667eea;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 1.1em;
-        }
-        .status {
-            background: #f0f9ff;
-            border-left: 4px solid #0ea5e9;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 8px;
-        }
-        .status h2 {
-            color: #0ea5e9;
-            margin-bottom: 10px;
-        }
-        .graph-data {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 20px 0;
-            max-height: 500px;
-            overflow: auto;
-        }
-        pre {
-            margin: 0;
-            font-size: 0.9em;
-            line-height: 1.5;
-        }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }
-        .stat-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 12px;
-            text-align: center;
-        }
-        .stat-value {
-            font-size: 2.5em;
-            font-weight: bold;
-            margin: 10px 0;
-        }
-        .stat-label {
-            opacity: 0.9;
-            font-size: 0.9em;
-        }
-        .footer {
-            text-align: center;
-            color: #666;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #e2e8f0;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🧠 Flask Brain</h1>
-        <p class="subtitle">Interactive Architecture Visualizer</p>
+    def serve_static(self, path: str):
+        """Serve static files from the viewer dist directory."""
+        # Remove leading slash
+        file_path = self.viewer_dir / path.lstrip("/")
         
-        <div class="status">
-            <h2>✅ Backend Running</h2>
-            <p>Flask Brain backend is successfully running and serving graph data.</p>
-            <p><strong>Note:</strong> The React frontend will be built separately. For now, you can view the raw graph data below.</p>
-        </div>
+        if not file_path.exists() or not file_path.is_file():
+            self.send_error(404, f"File not found: {path}")
+            return
         
-        <div id="stats" class="stats"></div>
-        
-        <h2 style="margin: 30px 0 15px 0; color: #334155;">Graph Data</h2>
-        <div class="graph-data">
-            <pre id="graph-data">Loading graph data...</pre>
-        </div>
-        
-        <div class="footer">
-            <p>Flask Brain v0.1.0 | <a href="http://192.168.1.127:3000/Chris/flask-brain" target="_blank">View on Forgejo</a></p>
-        </div>
-    </div>
+        try:
+            # Determine content type
+            content_type, _ = mimetypes.guess_type(str(file_path))
+            if content_type is None:
+                content_type = "application/octet-stream"
+            
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            self.send_error(500, f"Error reading file: {str(e)}")
     
-    <script>
-        // Load graph data
-        fetch('/api/manifest')
-            .then(r => r.json())
-            .then(manifest => {
-                // Display stats
-                const statsHtml = `
-                    <div class="stat-card">
-                        <div class="stat-label">Total Nodes</div>
-                        <div class="stat-value">${manifest.node_count}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Total Edges</div>
-                        <div class="stat-value">${manifest.edge_count}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Routes</div>
-                        <div class="stat-value">${manifest.node_types.route || 0}</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Models</div>
-                        <div class="stat-value">${manifest.node_types.model || 0}</div>
-                    </div>
-                `;
-                document.getElementById('stats').innerHTML = statsHtml;
-            })
-            .catch(err => console.error('Error loading manifest:', err));
+    def serve_html(self):
+        """Serve the React SPA index.html."""
+        index_path = self.viewer_dir / "index.html"
         
-        fetch('/api/graph/all')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('graph-data').textContent = JSON.stringify(data, null, 2);
-            })
-            .catch(err => {
-                document.getElementById('graph-data').textContent = 'Error loading graph data: ' + err.message;
-            });
-    </script>
-</body>
-</html>"""
+        if not index_path.exists():
+            self.send_error(500, "React app not built. Run 'npm run build' in frontend/")
+            return
         
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.end_headers()
-        self.wfile.write(html.encode())
+        try:
+            with open(index_path, 'rb') as f:
+                content = f.read()
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            self.send_error(500, f"Error reading index.html: {str(e)}")
     
     def log_message(self, format, *args):
         """Override to reduce logging noise."""
         pass
 
 
-def create_handler(graph_dir: Path):
+def create_handler(graph_dir: Path, viewer_dir: Path = None):
     """Create a handler with the graph directory bound."""
+    if viewer_dir is None:
+        viewer_dir = Path(__file__).parent / "viewer" / "dist"
+    
     class BoundHandler(FlaskBrainHandler):
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, graph_dir=graph_dir, **kwargs)
+            super().__init__(*args, graph_dir=graph_dir, viewer_dir=viewer_dir, **kwargs)
     return BoundHandler
 
 
