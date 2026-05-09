@@ -127,3 +127,94 @@ def test_model_scanner_annotated_column_count(annotated_app_path):
     nodes, _ = scanner.scan()
     model = next(n for n in nodes if n.id == "model::AnnotatedModel")
     assert len(model.metadata["columns"]) == 5
+
+
+# ── Parameterised column type tests (String(n), Numeric, etc.) ───────────────
+
+@pytest.fixture
+def string_type_app_path():
+    """Path to string_type_app fixture."""
+    return Path(__file__).parent / "fixtures" / "string_type_app"
+
+
+def test_string_column_type_resolved(string_type_app_path):
+    """String(128) should resolve to 'String', not 'Unknown'."""
+    scanner = ModelScanner(string_type_app_path)
+    nodes, _ = scanner.scan()
+    model = next(n for n in nodes if n.id == "model::Product")
+    columns = model.metadata["columns"]
+    assert columns["name"]["type"] == "String", f"Expected 'String', got {columns['name']['type']}"
+    assert columns["slug"]["type"] == "String"
+
+
+def test_numeric_column_type_resolved(string_type_app_path):
+    """Numeric(10, 2) should resolve to 'Numeric', not 'Unknown'."""
+    scanner = ModelScanner(string_type_app_path)
+    nodes, _ = scanner.scan()
+    model = next(n for n in nodes if n.id == "model::Product")
+    columns = model.metadata["columns"]
+    assert columns["price"]["type"] == "Numeric"
+
+
+def test_no_unknown_column_types(string_type_app_path):
+    """No column should have type 'Unknown' for well-known SQLAlchemy types."""
+    scanner = ModelScanner(string_type_app_path)
+    nodes, _ = scanner.scan()
+    model = next(n for n in nodes if n.id == "model::Product")
+    for col_name, col_info in model.metadata["columns"].items():
+        assert col_info["type"] != "Unknown", f"Column '{col_name}' has Unknown type"
+
+
+# ── Mixin inheritance tests ───────────────────────────────────────────────────
+
+@pytest.fixture
+def mixin_app_path():
+    """Path to mixin_app fixture."""
+    return Path(__file__).parent / "fixtures" / "mixin_app"
+
+
+def test_mixin_columns_inherited_single(mixin_app_path):
+    """Post inherits created_at and updated_at from TimestampMixin."""
+    scanner = ModelScanner(mixin_app_path)
+    nodes, _ = scanner.scan()
+    post = next((n for n in nodes if n.id == "model::Post"), None)
+    assert post is not None, "model::Post not found"
+    columns = post.metadata["columns"]
+    assert "id" in columns
+    assert "title" in columns
+    assert "created_at" in columns, "created_at inherited from TimestampMixin missing"
+    assert "updated_at" in columns, "updated_at inherited from TimestampMixin missing"
+
+
+def test_mixin_columns_inherited_multiple(mixin_app_path):
+    """Article inherits from TenantMixin and TimestampMixin — all columns visible."""
+    scanner = ModelScanner(mixin_app_path)
+    nodes, _ = scanner.scan()
+    article = next((n for n in nodes if n.id == "model::Article"), None)
+    assert article is not None, "model::Article not found"
+    columns = article.metadata["columns"]
+    assert "id" in columns
+    assert "body" in columns
+    assert "tenant_id" in columns, "tenant_id inherited from TenantMixin missing"
+    assert "created_at" in columns, "created_at inherited from TimestampMixin missing"
+    assert "updated_at" in columns, "updated_at inherited from TimestampMixin missing"
+
+
+def test_mixin_source_tagged(mixin_app_path):
+    """Inherited columns should be tagged with their source mixin name."""
+    scanner = ModelScanner(mixin_app_path)
+    nodes, _ = scanner.scan()
+    post = next(n for n in nodes if n.id == "model::Post")
+    columns = post.metadata["columns"]
+    assert columns["created_at"].get("from_mixin") == "TimestampMixin", (
+        "created_at should be tagged with from_mixin='TimestampMixin'"
+    )
+
+
+def test_mixin_classes_not_emitted_as_model_nodes(mixin_app_path):
+    """TimestampMixin and TenantMixin must NOT appear as model nodes."""
+    scanner = ModelScanner(mixin_app_path)
+    nodes, _ = scanner.scan()
+    node_ids = {n.id for n in nodes}
+    assert "model::TimestampMixin" not in node_ids
+    assert "model::TenantMixin" not in node_ids
