@@ -133,6 +133,9 @@ def test_graph_add_node_merge_metadata():
 def test_graph_add_edge():
     """Test adding edges to graph."""
     graph = Graph()
+    graph.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "/app/routes.py", 1))
+    graph.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "/app/routes.py", 5))
+    graph.add_node(Node("model::User", NodeType.MODEL, "User", "/app/models.py", 1))
     edge1 = Edge("route::GET /users", "action::list_users", EdgeType.CALLS)
     edge2 = Edge("action::list_users", "model::User", EdgeType.USES_MODEL)
     
@@ -145,6 +148,8 @@ def test_graph_add_edge():
 def test_graph_add_edge_no_duplicates():
     """Test that duplicate edges are not added."""
     graph = Graph()
+    graph.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "/app/routes.py", 1))
+    graph.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "/app/routes.py", 5))
     edge1 = Edge("route::GET /users", "action::list_users", EdgeType.CALLS)
     edge2 = Edge("route::GET /users", "action::list_users", EdgeType.CALLS)
     
@@ -157,6 +162,10 @@ def test_graph_add_edge_no_duplicates():
 def test_graph_get_edges_from():
     """Test getting edges from a node."""
     graph = Graph()
+    graph.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "/app/routes.py", 1))
+    graph.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "/app/routes.py", 5))
+    graph.add_node(Node("action::show_user", NodeType.ACTION, "show_user", "/app/routes.py", 10))
+    graph.add_node(Node("model::User", NodeType.MODEL, "User", "/app/models.py", 1))
     edge1 = Edge("route::GET /users", "action::list_users", EdgeType.CALLS)
     edge2 = Edge("route::GET /users", "action::show_user", EdgeType.CALLS)
     edge3 = Edge("action::list_users", "model::User", EdgeType.USES_MODEL)
@@ -172,6 +181,10 @@ def test_graph_get_edges_from():
 def test_graph_get_edges_to():
     """Test getting edges to a node."""
     graph = Graph()
+    graph.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "/app/routes.py", 1))
+    graph.add_node(Node("route::POST /users", NodeType.ROUTE, "POST /users", "/app/routes.py", 20))
+    graph.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "/app/routes.py", 5))
+    graph.add_node(Node("model::User", NodeType.MODEL, "User", "/app/models.py", 1))
     edge1 = Edge("route::GET /users", "action::list_users", EdgeType.CALLS)
     edge2 = Edge("route::POST /users", "action::list_users", EdgeType.CALLS)
     edge3 = Edge("action::list_users", "model::User", EdgeType.USES_MODEL)
@@ -188,13 +201,16 @@ def test_graph_to_dict():
     """Test converting graph to dictionary."""
     graph = Graph()
     node = Node("route::GET /users", NodeType.ROUTE, "GET /users", "/app/routes.py", 10)
+    graph.add_node(node)
+    # edge target doesn't exist — add it so add_edge doesn't drop it
+    graph.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "/app/routes.py", 15))
     edge = Edge("route::GET /users", "action::list_users", EdgeType.CALLS)
     
     graph.add_node(node)
     graph.add_edge(edge)
     
     data = graph.to_dict()
-    assert len(data["nodes"]) == 1
+    assert len(data["nodes"]) == 2
     assert len(data["edges"]) == 1
     assert data["nodes"][0]["id"] == "route::GET /users"
 
@@ -210,6 +226,14 @@ def test_graph_from_dict():
                 "file_path": "/app/routes.py",
                 "line_number": 10,
                 "metadata": {}
+            },
+            {
+                "id": "action::list_users",
+                "type": "action",
+                "label": "list_users",
+                "file_path": "/app/routes.py",
+                "line_number": 15,
+                "metadata": {}
             }
         ],
         "edges": [
@@ -223,7 +247,7 @@ def test_graph_from_dict():
     }
     
     graph = Graph.from_dict(data)
-    assert len(graph.nodes) == 1
+    assert len(graph.nodes) == 2
     assert len(graph.edges) == 1
 
 

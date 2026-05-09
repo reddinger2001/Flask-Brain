@@ -1,10 +1,12 @@
 """CLI entry point for Flask Brain."""
 
 import typer
+import json
 from pathlib import Path
 from rich.console import Console
-from flask_brain.graph import GraphBuilder
+from flask_brain.graph import GraphBuilder, Graph
 from flask_brain.server import start_server
+from flask_brain.context_export import export_context as _export_context
 
 app = typer.Typer(
     name="flask-brain",
@@ -77,16 +79,51 @@ def serve(
 @app.command()
 def export_context(
     path: Path = typer.Argument(..., help="Path to Flask project (with .flask-brain/ directory)"),
-    route: str = typer.Option(None, "--route", help="Route to export context for"),
+    route: str = typer.Option(None, "--route", help="Route node ID to export context for"),
     node: str = typer.Option(None, "--node", help="Node ID to export context for"),
-    format: str = typer.Option("md", "--format", help="Output format (json or md)"),
+    format: str = typer.Option("md", "--format", help="Output format: md or json"),
+    budget: int = typer.Option(4000, "--budget", help="Approximate token budget"),
+    depth: int = typer.Option(3, "--depth", help="BFS depth from focal node"),
+    output: Path = typer.Option(None, "--output", "-o", help="Write output to file instead of stdout"),
 ):
     """Export AI-ready context for a specific node or route."""
-    console.print(f"[bold green]Exporting context for:[/bold green] {path}")
-    console.print(f"[dim]Route: {route}[/dim]")
-    console.print(f"[dim]Node: {node}[/dim]")
-    console.print(f"[dim]Format: {format}[/dim]")
-    console.print("[yellow]Export context functionality not yet implemented[/yellow]")
+    graph_dir = path / ".flask-brain"
+    if not graph_dir.exists():
+        console.print(f"[bold red]Error:[/bold red] No .flask-brain directory found in {path}")
+        console.print("Run 'flask-brain scan' first.")
+        raise typer.Exit(1)
+
+    graph_path = graph_dir / "graph-all.json"
+    if not graph_path.exists():
+        console.print(f"[bold red]Error:[/bold red] graph-all.json not found in {graph_dir}")
+        raise typer.Exit(1)
+
+    node_id = node or route
+    if not node_id:
+        console.print("[bold red]Error:[/bold red] Provide --node or --route")
+        raise typer.Exit(1)
+
+    with open(graph_path) as f:
+        graph_data = json.load(f)
+
+    graph = Graph.from_dict(graph_data)
+
+    try:
+        context_md = _export_context(graph, node_id, budget=budget, depth=depth)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    if format == "json":
+        result = json.dumps({"node_id": node_id, "context": context_md}, indent=2)
+    else:
+        result = context_md
+
+    if output:
+        output.write_text(result)
+        console.print(f"[bold green]✓[/bold green] Context written to {output}")
+    else:
+        console.print(result)
 
 
 if __name__ == "__main__":

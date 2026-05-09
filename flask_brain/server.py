@@ -9,6 +9,8 @@ from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 import threading
+from flask_brain.context_export import export_context
+from flask_brain.graph import Graph
 
 
 class FlaskBrainHandler(SimpleHTTPRequestHandler):
@@ -120,7 +122,7 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             self._send_json_error(500, str(e))
 
     def serve_context(self, node_id: str):
-        """Serve AI context export for a node."""
+        """Serve AI context export for a node using context_export.py."""
         if not node_id:
             self._send_json_error(400, "Missing 'nodeId' parameter")
             return
@@ -134,42 +136,14 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             with open(graph_path) as f:
                 graph_data = json.load(f)
 
-            # Find the node
-            node = next((n for n in graph_data["nodes"] if n["id"] == node_id), None)
-            if not node:
-                self._send_json_error(404, f"Node not found: {node_id}")
+            graph = Graph.from_dict(graph_data)
+
+            try:
+                context_md = export_context(graph, node_id)
+            except ValueError as e:
+                self._send_json_error(404, str(e))
                 return
 
-            # Build a simple context block
-            lines = [
-                f"# Flask Brain — AI Context Export",
-                f"",
-                f"## Node",
-                f"- **ID:** `{node['id']}`",
-                f"- **Type:** {node['type']}",
-                f"- **Label:** {node['label']}",
-                f"- **File:** `{node['file_path']}` line {node['line_number']}",
-                f"",
-                f"## Metadata",
-            ]
-            for k, v in node.get("metadata", {}).items():
-                lines.append(f"- **{k}:** {v}")
-
-            # Find connected nodes (depth 1)
-            edges_from = [e for e in graph_data["edges"] if e["source"] == node_id]
-            edges_to = [e for e in graph_data["edges"] if e["target"] == node_id]
-
-            if edges_from:
-                lines += ["", "## Calls / Uses"]
-                for e in edges_from:
-                    lines.append(f"- `{e['target']}` ({e['type']})")
-
-            if edges_to:
-                lines += ["", "## Called By"]
-                for e in edges_to:
-                    lines.append(f"- `{e['source']}` ({e['type']})")
-
-            context_md = "\n".join(lines)
             self._send_json({"context": context_md, "node_id": node_id})
         except Exception as e:
             self._send_json_error(500, str(e))
