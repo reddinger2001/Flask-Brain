@@ -38,11 +38,24 @@ export function Sidebar({ node, onClose, onNavigate }: SidebarProps) {
     try {
       const response = await fetch(`/api/context?nodeId=${encodeURIComponent(node.id)}`);
       if (!response.ok) throw new Error('Failed to fetch context');
-      
       const data = await response.json();
       const context = data.context ?? JSON.stringify(data, null, 2);
-      await navigator.clipboard.writeText(context);
-      
+
+      // Try modern clipboard API first; fall back to textarea trick for http:// origins
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(context);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = context;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
     } catch (error) {

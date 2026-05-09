@@ -1,0 +1,18 @@
+Starting Flask Brain on http://localhost:7891
+Project: /Volumes/DevEnvironment/projects/VendorSync
+Traceback (most recent call last):
+  File "/Volumes/DevEnvironment/projects/FlaskBrain/start_server.py", line 12, in <module>
+    start_server(GRAPH_DIR, port=PORT, open_browser=False, project_path=PROJECT_PATH)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Volumes/DevEnvironment/projects/FlaskBrain/flask_brain/server.py", line 510, in start_server
+    server = ThreadingHTTPServer(("localhost", port), handler)
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 457, in __init__
+    self.server_bind()
+    ~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/http/server.py", line 136, in server_bind
+    socketserver.TCPServer.server_bind(self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socketserver.py", line 478, in server_bind
+    self.socket.bind(self.server_address)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 48] Address already in use

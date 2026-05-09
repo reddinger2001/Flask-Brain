@@ -390,108 +390,55 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
   };
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div className="relative w-full h-full">
       {/* Toolbar */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 10,
-          left: 10,
-          zIndex: 10,
-          background: 'white',
-          padding: '10px',
-          borderRadius: '4px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '8px',
-        }}
-      >
+      <div className="absolute top-3 left-3 z-10 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-3 flex flex-col gap-2">
         {/* Search */}
         <input
           type="text"
           placeholder="Search classes..."
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
-          style={{
-            padding: '6px 10px',
-            border: '1px solid #ddd',
-            borderRadius: '4px',
-            fontSize: '13px',
-            width: '200px',
-          }}
+          className="px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-400 w-48"
         />
 
         {/* Hide isolated toggle */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
           <input
             type="checkbox"
             checked={hideIsolated}
             onChange={e => setHideIsolated(e.target.checked)}
+            className="w-4 h-4 rounded"
           />
           Hide isolated models
         </label>
 
         {/* Zoom controls */}
-        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+        <div className="flex items-center gap-1">
           <button
             onClick={() => setZoom(z => Math.max(0.25, z - 0.25))}
-            style={{
-              padding: '4px 10px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              background: 'white',
-              cursor: 'pointer',
-              fontSize: '14px',
-            }}
-          >
-            −
-          </button>
-          <span style={{ fontSize: '12px', minWidth: '50px', textAlign: 'center' }}>
+            className="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-600 text-sm cursor-pointer"
+          >−</button>
+          <span className="text-xs text-gray-700 dark:text-gray-300 min-w-[42px] text-center">
             {Math.round(zoom * 100)}%
           </span>
           <button
             onClick={() => setZoom(z => Math.min(2, z + 0.25))}
-            style={{
-              padding: '4px 10px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              background: 'white',
-              cursor: 'pointer',
-              fontSize: '14px',
-            }}
-          >
-            +
-          </button>
+            className="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-600 text-sm cursor-pointer"
+          >+</button>
         </div>
 
         {/* Export PNG */}
         <button
           onClick={exportToPNG}
-          style={{
-            padding: '6px 10px',
-            border: '1px solid #ddd',
-            borderRadius: '4px',
-            background: '#4CAF50',
-            color: 'white',
-            cursor: 'pointer',
-            fontSize: '13px',
-            fontWeight: 500,
-          }}
+          className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-md text-sm font-medium cursor-pointer"
         >
           Export PNG
         </button>
       </div>
 
       {/* Scrollable canvas */}
-      <div
-        style={{
-          width: '100%',
-          height: '100%',
-          overflow: 'auto',
-          background: '#f9f9f9',
-        }}
-      >
+      <div className="w-full h-full overflow-auto bg-gray-50 dark:bg-gray-900">
         <svg
           ref={svgRef}
           width={svgDimensions.width}
