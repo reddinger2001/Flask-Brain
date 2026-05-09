@@ -142,6 +142,12 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             self.serve_search(query, limit)
         elif path == "/api/analysis/risk":
             self.serve_risk()
+        elif path == "/api/snapshots":
+            self.serve_snapshots()
+        elif path == "/api/diff":
+            baseline_id = params.get("baseline", [None])[0]
+            current_id = params.get("current", ["current"])[0]
+            self.serve_diff(baseline_id, current_id)
         else:
             self.send_error(404, "API endpoint not found")
     
@@ -164,6 +170,52 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                 "nodes": [n.to_dict() for n in nodes],
             }
             self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_snapshots(self):
+        """Serve list of available snapshots."""
+        try:
+            from flask_brain.diff import SnapshotManager
+            sm = SnapshotManager(self.project_path)
+            snapshots = sm.list_snapshots()
+            self._send_json({"count": len(snapshots), "snapshots": snapshots})
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_diff(self, baseline_id: str | None, current_id: str = "current"):
+        """Serve a graph diff between a baseline snapshot and current (or another snapshot)."""
+        if not baseline_id:
+            self._send_json_error(400, "Missing 'baseline' parameter")
+            return
+
+        try:
+            from flask_brain.diff import SnapshotManager, DiffEngine
+
+            sm = SnapshotManager(self.project_path)
+
+            try:
+                baseline_graph = sm.load_snapshot(baseline_id)
+            except ValueError as e:
+                self._send_json_error(404, str(e))
+                return
+
+            if current_id == "current":
+                graph_path = self.graph_dir / "graph-all.json"
+                if not graph_path.exists():
+                    self._send_json_error(404, "No current graph — run flask-brain scan first")
+                    return
+                with open(graph_path) as f:
+                    current_graph = Graph.from_dict(json.load(f))
+            else:
+                try:
+                    current_graph = sm.load_snapshot(current_id)
+                except ValueError as e:
+                    self._send_json_error(404, str(e))
+                    return
+
+            diff = DiffEngine().compute_diff(baseline_graph, current_graph, baseline_id, current_id)
+            self._send_json(diff.to_dict())
         except Exception as e:
             self._send_json_error(500, str(e))
 

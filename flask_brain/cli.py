@@ -130,5 +130,155 @@ def export_context(
         console.print(result)
 
 
+@app.command()
+def snapshot(
+    path: Path = typer.Argument(..., help="Path to Flask project (with .flask-brain/ directory)"),
+    label: str = typer.Option(None, "--label", "-l", help="Human-readable snapshot label"),
+):
+    """Create a named snapshot of the current graph."""
+    from flask_brain.diff import SnapshotManager
+
+    graph_dir = path / ".flask-brain"
+    if not graph_dir.exists():
+        console.print(f"[bold red]Error:[/bold red] No .flask-brain directory found in {path}")
+        console.print("Run 'flask-brain scan' first.")
+        raise typer.Exit(1)
+
+    sm = SnapshotManager(path)
+    try:
+        sid = sm.create_snapshot(label=label)
+    except FileNotFoundError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    console.print(f"[bold green]✓[/bold green] Snapshot created: [bold]{sid}[/bold]")
+    if label:
+        console.print(f"  Label: {label}")
+    snaps_dir = graph_dir / "snapshots"
+    console.print(f"  Saved to: {snaps_dir / f'snapshot-{sid}.json'}")
+
+
+@app.command()
+def snapshots(
+    path: Path = typer.Argument(..., help="Path to Flask project (with .flask-brain/ directory)"),
+    delete: str = typer.Option(None, "--delete", help="Delete a snapshot by ID"),
+):
+    """List (or delete) graph snapshots."""
+    from flask_brain.diff import SnapshotManager
+
+    sm = SnapshotManager(path)
+
+    if delete:
+        try:
+            sm.delete_snapshot(delete)
+            console.print(f"[bold green]✓[/bold green] Snapshot deleted: {delete}")
+        except ValueError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(1)
+        return
+
+    all_snaps = sm.list_snapshots()
+    if not all_snaps:
+        console.print("[dim]No snapshots found. Run 'flask-brain snapshot <path>' to create one.[/dim]")
+        return
+
+    console.print(f"[bold]Snapshots for {path}:[/bold]\n")
+    for s in all_snaps:
+        label_str = f"  {s['label']}" if s.get("label") else ""
+        console.print(
+            f"  [bold cyan]{s['id']}[/bold cyan]  "
+            f"{s['created_at'][:16].replace('T', ' ')}  "
+            f"{s.get('node_count', '?')} nodes, {s.get('edge_count', '?')} edges"
+            f"{label_str}"
+        )
+
+
+@app.command(name="diff")
+def diff_cmd(
+    path: Path = typer.Argument(..., help="Path to Flask project"),
+    baseline: str = typer.Option(..., "--baseline", "-b", help="Baseline snapshot ID"),
+    current: str = typer.Option("current", "--current", "-c", help="Current snapshot ID or 'current'"),
+    output: str = typer.Option("summary", "--output", help="Output format: summary or json"),
+):
+    """Compare current graph (or a snapshot) against a baseline snapshot."""
+    import json as _json
+    from flask_brain.diff import SnapshotManager, DiffEngine
+
+    sm = SnapshotManager(path)
+
+    try:
+        baseline_graph = sm.load_snapshot(baseline)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    if current == "current":
+        graph_path = path / ".flask-brain" / "graph-all.json"
+        if not graph_path.exists():
+            console.print("[bold red]Error:[/bold red] No current graph. Run 'flask-brain scan' first.")
+            raise typer.Exit(1)
+        with open(graph_path) as f:
+            from flask_brain.graph import Graph
+            current_graph = Graph.from_dict(_json.load(f))
+        current_label = "Current scan"
+    else:
+        try:
+            current_graph = sm.load_snapshot(current)
+        except ValueError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(1)
+        current_label = current
+
+    diff = DiffEngine().compute_diff(baseline_graph, current_graph, baseline, current)
+
+    if output == "json":
+        console.print(_json.dumps(diff.to_dict(), indent=2))
+        return
+
+    # Summary mode
+    snaps = {s["id"]: s for s in sm.list_snapshots()}
+    baseline_label = snaps.get(baseline, {}).get("label") or baseline
+
+    console.print(f"\n[bold]Comparing:[/bold]")
+    console.print(f"  Baseline: [cyan]{baseline}[/cyan]{f'  ({baseline_label})' if baseline_label != baseline else ''}")
+    console.print(f"  Current:  [cyan]{current_label}[/cyan]\n")
+    console.print(f"[bold]Summary:[/bold]")
+
+    s = diff.summary
+    console.print(
+        f"  Nodes:  [green]+{s['nodes_added']} added[/green]  "
+        f"[red]-{s['nodes_removed']} removed[/red]  "
+        f"[yellow]~{s['nodes_modified']} modified[/yellow]"
+    )
+    console.print(
+        f"  Edges:  [green]+{s['edges_added']} added[/green]  "
+        f"[red]-{s['edges_removed']} removed[/red]"
+    )
+
+    if diff.node_changes:
+        console.print(f"\n[bold]Node Changes:[/bold]")
+        for nc in sorted(diff.node_changes, key=lambda x: x.change_type):
+            icon = {"added": "[green][+][/green]", "removed": "[red][-][/red]", "modified": "[yellow][~][/yellow]"}[nc.change_type]
+            node = nc.new_node or nc.old_node or {}
+            fp = node.get("file_path", "")
+            ln = node.get("line_number", "")
+            loc = f"{fp}:{ln}" if ln else fp
+            changes_str = ""
+            if nc.changes and nc.change_type == "modified":
+                parts = []
+                for field, vals in nc.changes.items():
+                    if field != "metadata":
+                        parts.append(f"{field}: {vals['old']} → {vals['new']}")
+                if parts:
+                    changes_str = f"  ({', '.join(parts)})"
+            console.print(f"  {icon} {nc.node_id}  [dim]{loc}[/dim]{changes_str}")
+
+    if diff.edge_changes:
+        console.print(f"\n[bold]Edge Changes:[/bold]")
+        for ec in sorted(diff.edge_changes, key=lambda x: x.change_type):
+            icon = {"added": "[green][+][/green]", "removed": "[red][-][/red]"}[ec.change_type]
+            console.print(f"  {icon} {ec.source} → {ec.target}  [dim]({ec.edge_type})[/dim]")
+
+
 if __name__ == "__main__":
     app()

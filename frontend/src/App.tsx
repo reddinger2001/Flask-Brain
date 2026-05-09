@@ -9,11 +9,12 @@ import { DeadWeightView } from './components/DeadWeightView';
 import { BlindSpotsView } from './components/BlindSpotsView';
 import { SearchView } from './components/SearchView';
 import { RiskView } from './components/RiskView';
+import { DiffView } from './components/DiffView';
 import { useGraph, useManifest } from './hooks/useGraph';
 import { useSSE } from './hooks/useSSE';
 import type { Node } from './types/graph';
 
-type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk';
+type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('graph');
@@ -147,6 +148,7 @@ function App() {
             { id: 'blindspots' as TabType, label: 'Blind Spots', icon: '🔍' },
             { id: 'search' as TabType, label: 'Search', icon: '🔎' },
             { id: 'risk' as TabType, label: 'Risk', icon: '🔥' },
+            { id: 'diff' as TabType, label: 'Diff', icon: '📊' },
           ].map(tab => (
             <button
               key={tab.id}
@@ -197,6 +199,9 @@ function App() {
           )}
           {activeTab === 'risk' && (
             <RiskView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
+          )}
+          {activeTab === 'diff' && (
+            <DiffView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
         </div>
 

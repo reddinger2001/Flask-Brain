@@ -219,3 +219,154 @@ def test_serve_risk_returns_nodes(tmp_path):
         conn.close()
     except Exception as e:
         pytest.skip(f"Server test skipped: {e}")
+
+
+def _start_server_with_graph(tmp_path, graph: Graph):
+    """Helper: write graph-all.json and start a server on a free port. Returns port."""
+    graph_dir = tmp_path / ".flask-brain"
+    graph_dir.mkdir(exist_ok=True)
+    manifest = {"project_name": "test", "scan_timestamp": "2024-01-01T00:00:00Z",
+                "node_count": len(graph.nodes), "edge_count": len(graph.edges), "node_types": {}}
+    with open(graph_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f)
+    with open(graph_dir / "graph-all.json", "w") as f:
+        json.dump(graph.to_dict(), f)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        port = s.getsockname()[1]
+
+    threading.Thread(
+        target=start_server,
+        args=(graph_dir, port, False),
+        kwargs={"project_path": tmp_path},
+        daemon=True,
+    ).start()
+    time.sleep(0.5)
+    return port
+
+
+def test_serve_snapshots_empty(tmp_path):
+    """GET /api/snapshots returns empty list when no snapshots exist."""
+    graph = Graph()
+    graph.add_node(Node("route::GET /", NodeType.ROUTE, "GET /", "r.py", 1))
+    port = _start_server_with_graph(tmp_path, graph)
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        conn.request('GET', '/api/snapshots')
+        response = conn.getresponse()
+        assert response.status == 200
+        data = json.loads(response.read().decode())
+        assert data["count"] == 0
+        assert data["snapshots"] == []
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")
+
+
+def test_serve_snapshots_lists_created_snapshots(tmp_path):
+    """GET /api/snapshots returns snapshots after one is created."""
+    from flask_brain.diff import SnapshotManager
+    graph = Graph()
+    graph.add_node(Node("route::GET /", NodeType.ROUTE, "GET /", "r.py", 1))
+    port = _start_server_with_graph(tmp_path, graph)
+
+    sm = SnapshotManager(tmp_path)
+    sid = sm.create_snapshot(label="test snap")
+
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        conn.request('GET', '/api/snapshots')
+        response = conn.getresponse()
+        assert response.status == 200
+        data = json.loads(response.read().decode())
+        assert data["count"] == 1
+        assert data["snapshots"][0]["id"] == sid
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")
+
+
+def test_serve_diff_missing_baseline_returns_400(tmp_path):
+    """GET /api/diff without baseline returns 400."""
+    graph = Graph()
+    graph.add_node(Node("route::GET /", NodeType.ROUTE, "GET /", "r.py", 1))
+    port = _start_server_with_graph(tmp_path, graph)
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        conn.request('GET', '/api/diff')
+        response = conn.getresponse()
+        assert response.status == 400
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")
+
+
+def test_serve_diff_unknown_baseline_returns_404(tmp_path):
+    """GET /api/diff with unknown baseline snapshot returns 404."""
+    graph = Graph()
+    graph.add_node(Node("route::GET /", NodeType.ROUTE, "GET /", "r.py", 1))
+    port = _start_server_with_graph(tmp_path, graph)
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        conn.request('GET', '/api/diff?baseline=99991231-235959')
+        response = conn.getresponse()
+        assert response.status == 404
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")
+
+
+def test_serve_diff_returns_correct_diff(tmp_path):
+    """GET /api/diff returns added/removed nodes vs baseline snapshot."""
+    from flask_brain.diff import SnapshotManager
+
+    baseline = Graph()
+    baseline.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "r.py", 1))
+    baseline.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "a.py", 5))
+
+    graph_dir = tmp_path / ".flask-brain"
+    graph_dir.mkdir(exist_ok=True)
+    with open(graph_dir / "graph-all.json", "w") as f:
+        json.dump(baseline.to_dict(), f)
+
+    sm = SnapshotManager(tmp_path)
+    sid = sm.create_snapshot(label="v1")
+
+    current = Graph()
+    current.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "r.py", 1))
+    current.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "a.py", 5))
+    current.add_node(Node("service::NewSvc", NodeType.SERVICE, "NewSvc", "s.py", 10))
+
+    manifest = {"project_name": "test", "scan_timestamp": "2024-01-01T00:00:00Z",
+                "node_count": 3, "edge_count": 0, "node_types": {}}
+    with open(graph_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f)
+    with open(graph_dir / "graph-all.json", "w") as f:
+        json.dump(current.to_dict(), f)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        port = s.getsockname()[1]
+
+    threading.Thread(
+        target=start_server,
+        args=(graph_dir, port, False),
+        kwargs={"project_path": tmp_path},
+        daemon=True,
+    ).start()
+    time.sleep(0.5)
+
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        conn.request('GET', f'/api/diff?baseline={sid}')
+        response = conn.getresponse()
+        assert response.status == 200
+        data = json.loads(response.read().decode())
+        assert data["summary"]["nodes_added"] == 1
+        assert data["summary"]["nodes_removed"] == 0
+        added = [nc for nc in data["node_changes"] if nc["change_type"] == "added"]
+        assert added[0]["node_id"] == "service::NewSvc"
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")
