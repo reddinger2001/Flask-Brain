@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { GraphCanvas } from './components/GraphCanvas';
+import { NodeGraph } from './components/NodeGraph';
 import { RouteMap } from './components/RouteMap';
 import { ERDView } from './components/ERDView';
 import { HeatmapView } from './components/HeatmapView';
@@ -17,12 +18,13 @@ import { useGraph, useManifest } from './hooks/useGraph';
 import { useSSE } from './hooks/useSSE';
 import type { Node } from './types/graph';
 
-type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff' | 'classdiagram' | 'componentdiagram' | 'sequence';
+type TabType = 'graph' | 'blueprints' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff' | 'classdiagram' | 'componentdiagram' | 'sequence';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('graph');
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [navigateToNode, setNavigateToNode] = useState<Node | null>(null);
+  const [graphFocusNodeId, setGraphFocusNodeId] = useState<string | null>(null);
   const [isDark, setIsDark] = useState(true);
   const [isRescanning, setIsRescanning] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -90,6 +92,13 @@ function App() {
     setTimeout(() => setNavigateToNode(null), 500);
   };
 
+  const handleShowInGraph = (node: Node) => {
+    setActiveTab('graph');
+    setSelectedNode(node);
+    setGraphFocusNodeId(node.id);
+    setTimeout(() => setGraphFocusNodeId(null), 500);
+  };
+
   if (loading) {
     return (
       <div className="w-full h-screen flex items-center justify-center bg-white dark:bg-gray-900">
@@ -144,6 +153,7 @@ function App() {
         <div className="flex gap-1">
           {[
             { id: 'graph' as TabType, label: 'Graph', icon: '🕸️' },
+            { id: 'blueprints' as TabType, label: 'Blueprints', icon: '📦' },
             { id: 'classdiagram' as TabType, label: 'Class Diagram', icon: '📐' },
             { id: 'componentdiagram' as TabType, label: 'Components', icon: '🧩' },
             { id: 'sequence' as TabType, label: 'Sequence', icon: '📋' },
@@ -177,6 +187,14 @@ function App() {
         {/* View Area */}
         <div className="flex-1 overflow-hidden">
           {activeTab === 'graph' && (
+            <NodeGraph
+              graph={graph}
+              onNodeSelect={handleNodeSelect}
+              selectedNodeId={selectedNode?.id || null}
+              focusNodeId={graphFocusNodeId}
+            />
+          )}
+          {activeTab === 'blueprints' && (
             <GraphCanvas
               graph={graph}
               onNodeSelect={handleNodeSelect}
@@ -222,7 +240,7 @@ function App() {
 
         {/* Sidebar */}
         {selectedNode && (
-          <Sidebar node={selectedNode} onClose={() => setSelectedNode(null)} onNavigate={handleHeatmapNodeSelect} />
+          <Sidebar node={selectedNode} onClose={() => setSelectedNode(null)} onNavigate={handleHeatmapNodeSelect} onShowInGraph={handleShowInGraph} />
         )}
       </div>
 

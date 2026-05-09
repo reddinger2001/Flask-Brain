@@ -8,9 +8,10 @@ interface SidebarProps {
   node: Node | null;
   onClose: () => void;
   onNavigate?: (node: Node) => void;
+  onShowInGraph?: (node: Node) => void;
 }
 
-export function Sidebar({ node, onClose, onNavigate }: SidebarProps) {
+export function Sidebar({ node, onClose, onNavigate, onShowInGraph }: SidebarProps) {
   const [showSource, setShowSource] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
   const [impactData, setImpactData] = useState<Graph | null>(null);
@@ -316,6 +317,17 @@ export function Sidebar({ node, onClose, onNavigate }: SidebarProps) {
                 ) : null}
               </div>
             )}
+          </div>
+
+          {/* Show in Graph Button */}
+          <div className="pt-4">
+            <button
+              onClick={() => onShowInGraph?.(node)}
+              className="w-full px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <span>🕸️</span>
+              Show in Graph
+            </button>
           </div>
 
           {/* Copy AI Context Button */}
