@@ -233,8 +233,25 @@ class GraphBuilder:
 
     def build(self, project_path: Path) -> Graph:
         """Build complete graph by running all scanners on a project."""
-        # This will be implemented when scanners are ready
-        # For now, return empty graph
+        from flask_brain.scanners.route_scanner import RouteScanner
+        from flask_brain.scanners.model_scanner import ModelScanner
+        from flask_brain.scanners.view_tracer import ViewFunctionTracer
+        from flask_brain.scanners.service_scanner import ServiceScanner
+        from flask_brain.scanners.celery_scanner import CeleryTaskScanner
+        
+        # Run all scanners
+        scanners = [
+            RouteScanner(project_path),
+            ModelScanner(project_path),
+            ViewFunctionTracer(project_path),
+            ServiceScanner(project_path),
+            CeleryTaskScanner(project_path),
+        ]
+        
+        for scanner in scanners:
+            nodes, edges = scanner.scan()
+            self.add_scanner_output(nodes, edges)
+        
         return self.graph
 
     def get_graph(self) -> Graph:

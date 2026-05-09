@@ -3,6 +3,8 @@
 import typer
 from pathlib import Path
 from rich.console import Console
+from flask_brain.graph import GraphBuilder
+from flask_brain.server import start_server
 
 app = typer.Typer(
     name="flask-brain",
@@ -22,11 +24,36 @@ def scan(
 ):
     """Scan a Flask project and generate architecture graph."""
     console.print(f"[bold green]Scanning Flask project:[/bold green] {path}")
-    console.print(f"[dim]Output directory: {output or path / '.flask-brain'}[/dim]")
-    console.print(f"[dim]Watch mode: {watch}[/dim]")
-    console.print(f"[dim]Port: {port}[/dim]")
-    console.print(f"[dim]Serve: {not no_serve}[/dim]")
-    console.print("[yellow]Scan functionality not yet implemented[/yellow]")
+    
+    # Validate path
+    if not path.exists():
+        console.print(f"[bold red]Error:[/bold red] Path does not exist: {path}")
+        raise typer.Exit(1)
+    
+    # Determine output directory
+    output_dir = output or (path / ".flask-brain")
+    console.print(f"[dim]Output directory: {output_dir}[/dim]")
+    
+    # Build graph
+    console.print("[yellow]Running scanners...[/yellow]")
+    builder = GraphBuilder()
+    graph = builder.build(path)
+    
+    # Write graph to disk
+    console.print(f"[yellow]Writing graph data...[/yellow]")
+    graph.write(output_dir)
+    
+    console.print(f"[bold green]✓[/bold green] Scan complete!")
+    console.print(f"  Nodes: {len(graph.nodes)}")
+    console.print(f"  Edges: {len(graph.edges)}")
+    
+    # Start server if requested
+    if not no_serve:
+        console.print(f"\n[bold blue]Starting HTTP server on port {port}...[/bold blue]")
+        start_server(output_dir, port=port, open_browser=True)
+    
+    if watch:
+        console.print("[yellow]Watch mode not yet implemented[/yellow]")
 
 
 @app.command()
@@ -36,8 +63,15 @@ def serve(
 ):
     """Start HTTP server to view previously scanned project."""
     console.print(f"[bold green]Starting server for:[/bold green] {path}")
-    console.print(f"[dim]Port: {port}[/dim]")
-    console.print("[yellow]Serve functionality not yet implemented[/yellow]")
+    
+    # Find .flask-brain directory
+    graph_dir = path / ".flask-brain"
+    if not graph_dir.exists():
+        console.print(f"[bold red]Error:[/bold red] No .flask-brain directory found in {path}")
+        console.print("Run 'flask-brain scan' first to generate graph data.")
+        raise typer.Exit(1)
+    
+    start_server(graph_dir, port=port, open_browser=True)
 
 
 @app.command()
