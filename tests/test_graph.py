@@ -529,3 +529,96 @@ def test_blind_spots_custom_node_types():
 
     assert "action::blind" in blind_ids
     assert "service::svc_blind" not in blind_ids  # SERVICE excluded
+
+
+# ── impact_subgraph() tests ───────────────────────────────────────────────────
+
+def _make_impact_graph() -> Graph:
+    """
+    Build a chain: routeA → svcX → svcY (target)
+                   routeB → svcY (direct)
+                   routeC → svcZ  (unrelated)
+    """
+    g = Graph()
+
+    nodes = {
+        "route_a": Node("route::GET /a", NodeType.ROUTE, "GET /a", "r.py", 1),
+        "route_b": Node("route::GET /b", NodeType.ROUTE, "GET /b", "r.py", 2),
+        "route_c": Node("route::GET /c", NodeType.ROUTE, "GET /c", "r.py", 3),
+        "svc_x":   Node("service::svc_x", NodeType.SERVICE, "svc_x", "s.py", 1),
+        "svc_y":   Node("service::svc_y", NodeType.SERVICE, "svc_y", "s.py", 10),
+        "svc_z":   Node("service::svc_z", NodeType.SERVICE, "svc_z", "s.py", 20),
+    }
+    for n in nodes.values():
+        g.add_node(n)
+
+    g.add_edge(Edge("route::GET /a", "service::svc_x", EdgeType.CALLS))
+    g.add_edge(Edge("service::svc_x", "service::svc_y", EdgeType.CALLS))
+    g.add_edge(Edge("route::GET /b", "service::svc_y", EdgeType.CALLS))
+    g.add_edge(Edge("route::GET /c", "service::svc_z", EdgeType.CALLS))
+    return g
+
+
+def test_impact_subgraph_includes_all_ancestors():
+    """impact_subgraph() must include all nodes that transitively call the target."""
+    g = _make_impact_graph()
+    sub = g.impact_subgraph("service::svc_y")
+    sub_ids = set(sub.nodes.keys())
+
+    # svc_y itself
+    assert "service::svc_y" in sub_ids
+    # direct caller
+    assert "route::GET /b" in sub_ids
+    # transitive callers (routeA → svcX → svcY)
+    assert "service::svc_x" in sub_ids
+    assert "route::GET /a" in sub_ids
+
+
+def test_impact_subgraph_excludes_unrelated_nodes():
+    """impact_subgraph() must NOT include nodes not in the ancestor chain."""
+    g = _make_impact_graph()
+    sub = g.impact_subgraph("service::svc_y")
+    sub_ids = set(sub.nodes.keys())
+
+    assert "route::GET /c" not in sub_ids
+    assert "service::svc_z" not in sub_ids
+
+
+def test_impact_subgraph_includes_self():
+    """impact_subgraph() must include the start node itself."""
+    g = _make_impact_graph()
+    sub = g.impact_subgraph("service::svc_y")
+    assert "service::svc_y" in sub.nodes
+
+
+def test_impact_subgraph_depth_limit():
+    """impact_subgraph() must respect the depth parameter."""
+    g = _make_impact_graph()
+    # depth=1 means only direct callers
+    sub = g.impact_subgraph("service::svc_y", depth=1)
+    sub_ids = set(sub.nodes.keys())
+
+    assert "service::svc_y" in sub_ids
+    assert "route::GET /b" in sub_ids     # direct caller — included
+    assert "service::svc_x" in sub_ids   # also direct caller of svc_y? No — svc_x calls svc_y
+    # routeA is depth=2 away (routeA→svcX→svcY) — must be excluded
+    assert "route::GET /a" not in sub_ids
+
+
+def test_impact_subgraph_invalid_node():
+    """impact_subgraph() raises ValueError for unknown node IDs."""
+    g = _make_impact_graph()
+    with pytest.raises(ValueError, match="not found"):
+        g.impact_subgraph("service::does_not_exist")
+
+
+def test_impact_subgraph_no_callers():
+    """impact_subgraph() on a node with no callers returns only that node."""
+    g = _make_impact_graph()
+    # svc_z is called by routeC; svc_z itself has no callers
+    sub = g.impact_subgraph("route::GET /c")
+    sub_ids = set(sub.nodes.keys())
+
+    assert "route::GET /c" in sub_ids
+    # No one calls routeC, so it's just the node itself
+    assert len(sub_ids) == 1

@@ -199,6 +199,62 @@ class Graph:
                 subgraph.add_node(node)
         return subgraph
 
+    def impact_subgraph(self, node_id: str, depth: int = 5) -> "Graph":
+        """Return the reverse-walk subgraph: all nodes that depend on node_id.
+
+        Walks edges BACKWARDS from node_id — i.e. finds every node that has a
+        path TO node_id. This answers: "what breaks if this node changes?"
+
+        Args:
+            node_id: Starting node ID.
+            depth:   Maximum hop distance to traverse (default 5).
+
+        Returns:
+            A new Graph containing:
+            - The starting node
+            - All ancestor nodes within 'depth' hops
+            - All edges that connect those ancestors to node_id (and to each other)
+
+        Raises:
+            ValueError: If node_id does not exist in the graph.
+        """
+        if node_id not in self.nodes:
+            raise ValueError(f"Node '{node_id}' not found in graph")
+
+        # Build reverse adjacency: target → list of (source, edge)
+        reverse: dict[str, list[tuple[str, Edge]]] = {}
+        for edge in self.edges:
+            reverse.setdefault(edge.target, []).append((edge.source, edge))
+
+        subgraph = Graph()
+        visited: set[str] = set()
+        queue: list[tuple[str, int]] = [(node_id, 0)]
+
+        while queue:
+            current_id, current_depth = queue.pop(0)
+            if current_id in visited or current_depth > depth:
+                continue
+            visited.add(current_id)
+            node = self.get_node(current_id)
+            if node:
+                subgraph.add_node(node)
+
+            if current_depth >= depth:
+                continue  # Don't walk further; don't add nodes at depth+1
+
+            for source_id, edge in reverse.get(current_id, []):
+                if source_id not in visited:
+                    queue.append((source_id, current_depth + 1))
+                # Only include the edge+source if source will be within depth
+                # (it'll be added when dequeued and visited)
+                # We add the edge now but the source node will be added on its own visit
+                source_node = self.get_node(source_id)
+                if source_node and source_id not in visited:
+                    # Tentatively add edge; source node added when visited
+                    subgraph.add_edge(edge)
+
+        return subgraph
+
     def blind_spots(
         self,
         node_types: set[NodeType] | None = None,

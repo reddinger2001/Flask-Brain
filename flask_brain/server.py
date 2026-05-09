@@ -132,6 +132,10 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             self.serve_dead_weight()
         elif path == "/api/analysis/blind-spots":
             self.serve_blind_spots()
+        elif path == "/api/analysis/impact":
+            node_id = params.get("nodeId", [None])[0]
+            depth = int(params.get("depth", [5])[0])
+            self.serve_impact(node_id, depth)
         else:
             self.send_error(404, "API endpoint not found")
     
@@ -171,6 +175,36 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                 "count": len(dead_nodes),
                 "nodes": [n.to_dict() for n in dead_nodes],
             }
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_impact(self, node_id: str | None, depth: int = 5):
+        """Serve impact analysis: reverse-walk subgraph showing what depends on node_id."""
+        if not node_id:
+            self._send_json_error(400, "Missing 'nodeId' parameter")
+            return
+
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+
+            graph = Graph.from_dict(graph_data)
+
+            try:
+                subgraph = graph.impact_subgraph(node_id, depth=depth)
+            except ValueError as e:
+                self._send_json_error(404, str(e))
+                return
+
+            result = subgraph.to_dict()
+            result["root_node_id"] = node_id
+            result["depth"] = depth
             self._send_json(result)
         except Exception as e:
             self._send_json_error(500, str(e))

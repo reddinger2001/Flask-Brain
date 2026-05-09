@@ -1,19 +1,38 @@
 import { useState } from 'react';
 import { NODE_COLORS, COMPLEXITY_COLORS } from '../utils/cytoscapeStyles';
-import type { Node } from '../types/graph';
+import type { Node, Graph } from '../types/graph';
 import { SequenceDiagram } from './SequenceDiagram';
 import { SourceViewer } from './SourceViewer';
 
 interface SidebarProps {
   node: Node | null;
   onClose: () => void;
+  onNavigate?: (node: Node) => void;
 }
 
-export function Sidebar({ node, onClose }: SidebarProps) {
+export function Sidebar({ node, onClose, onNavigate }: SidebarProps) {
   const [showSource, setShowSource] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
+  const [impactData, setImpactData] = useState<Graph | null>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [showImpact, setShowImpact] = useState(false);
 
   if (!node) return null;
+
+  const handleImpactAnalysis = async () => {
+    if (showImpact && impactData) { setShowImpact(false); return; }
+    setImpactLoading(true);
+    setShowImpact(true);
+    try {
+      const res = await fetch(`/api/analysis/impact?nodeId=${encodeURIComponent(node.id)}`);
+      const data = await res.json();
+      setImpactData(data);
+    } catch (e) {
+      console.error('Impact fetch error', e);
+    } finally {
+      setImpactLoading(false);
+    }
+  };
 
   const handleCopyContext = async () => {
     try {
@@ -237,6 +256,53 @@ export function Sidebar({ node, onClose }: SidebarProps) {
               <SequenceDiagram routeNode={node} />
             </div>
           )}
+
+          {/* Impact Analysis */}
+          <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+            <button
+              onClick={handleImpactAnalysis}
+              className="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <span>⚡</span>
+              {showImpact ? 'Hide Impact Analysis' : 'Show Impact Analysis'}
+            </button>
+            {showImpact && (
+              <div className="mt-3 rounded-lg border border-indigo-200 dark:border-indigo-700 overflow-hidden">
+                {impactLoading ? (
+                  <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                    <div className="animate-spin inline-block h-5 w-5 border-b-2 border-indigo-500 rounded-full mr-2"></div>
+                    Traversing graph…
+                  </div>
+                ) : impactData ? (
+                  <div className="p-3 space-y-1 max-h-64 overflow-y-auto">
+                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                      {impactData.nodes.length - 1} dependent node{impactData.nodes.length !== 2 ? 's' : ''} (what breaks if this changes)
+                    </p>
+                    {impactData.nodes
+                      .filter((n: Node) => n.id !== node.id)
+                      .map((n: Node) => (
+                        <button
+                          key={n.id}
+                          onClick={() => onNavigate?.(n)}
+                          className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors"
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: NODE_COLORS[n.type] || '#888' }}
+                          />
+                          <span className="text-xs text-gray-700 dark:text-gray-300 font-mono truncate">{n.label}</span>
+                          <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">{n.type}</span>
+                        </button>
+                      ))
+                    }
+                    {impactData.nodes.length === 1 && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 italic">No upstream dependents found.</p>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
 
           {/* Copy AI Context Button */}
           <div className="pt-4">

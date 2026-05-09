@@ -191,7 +191,7 @@ function App() {
 
         {/* Sidebar */}
         {selectedNode && (
-          <Sidebar node={selectedNode} onClose={() => setSelectedNode(null)} />
+          <Sidebar node={selectedNode} onClose={() => setSelectedNode(null)} onNavigate={handleHeatmapNodeSelect} />
         )}
       </div>
 
