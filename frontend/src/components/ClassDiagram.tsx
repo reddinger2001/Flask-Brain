@@ -64,42 +64,57 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
     });
   }, [modelNodes, searchTerm, hideIsolated, connectedNodeIds]);
 
-  // Calculate layout
+  // Calculate box height for a node
+  const getBoxHeight = (node: Node) => {
+    const columns = node.metadata.columns || {};
+    const columnEntries = Object.entries(columns);
+    const displayedColumns = columnEntries.slice(0, 8);
+    const hasMore = columnEntries.length > 8;
+    const headerHeight = 50;
+    const attributeRowHeight = 20;
+    const attributesHeight = displayedColumns.length > 0
+      ? displayedColumns.length * attributeRowHeight + (hasMore ? attributeRowHeight : 0)
+      : attributeRowHeight;
+    const methodsHeight = 30;
+    return Math.max(120, headerHeight + attributesHeight + methodsHeight);
+  };
+
+  // Calculate layout — track actual row heights to prevent overlap
   const classBoxes = useMemo(() => {
     const boxes: ClassBox[] = [];
     const nodeCount = visibleNodes.length;
-    
     if (nodeCount === 0) return boxes;
 
     const cols = Math.ceil(Math.sqrt(nodeCount));
     const boxWidth = 200;
     const horizontalSpacing = 160;
-    const verticalSpacing = 140;
+    const verticalSpacing = 60;
+
+    // First pass: compute max height per row
+    const rowMaxHeights: number[] = [];
+    visibleNodes.forEach((node, index) => {
+      const row = Math.floor(index / cols);
+      const h = getBoxHeight(node);
+      rowMaxHeights[row] = Math.max(rowMaxHeights[row] ?? 0, h);
+    });
+
+    // Second pass: compute cumulative Y offsets per row
+    const rowYOffsets: number[] = [];
+    let cumY = 50;
+    rowMaxHeights.forEach((h, r) => {
+      rowYOffsets[r] = cumY;
+      cumY += h + verticalSpacing;
+    });
 
     visibleNodes.forEach((node, index) => {
       const col = index % cols;
       const row = Math.floor(index / cols);
-      
-      // Calculate box height based on attributes
-      const columns = node.metadata.columns || {};
-      const columnEntries = Object.entries(columns);
-      const displayedColumns = columnEntries.slice(0, 8);
-      const hasMore = columnEntries.length > 8;
-      
-      const headerHeight = 50;
-      const attributeRowHeight = 20;
-      const attributesHeight = displayedColumns.length > 0 
-        ? displayedColumns.length * attributeRowHeight + (hasMore ? attributeRowHeight : 0)
-        : attributeRowHeight; // "(no columns)" row
-      const methodsHeight = 30; // minimal methods section
-      const boxHeight = Math.max(120, headerHeight + attributesHeight + methodsHeight);
-
       boxes.push({
         node,
         x: col * (boxWidth + horizontalSpacing) + 50,
-        y: row * (boxHeight + verticalSpacing) + 50,
+        y: rowYOffsets[row],
         width: boxWidth,
-        height: boxHeight,
+        height: getBoxHeight(node),
       });
     });
 

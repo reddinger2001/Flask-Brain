@@ -31,7 +31,7 @@ const VERTICAL_GAP = 120;
 
 export function ComponentDiagram({ graph, onNodeSelect, selectedNodeId }: ComponentDiagramProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [showDependencies, setShowDependencies] = useState(false);
+  const [showDependencies, setShowDependencies] = useState(true);
   const [minModels, setMinModels] = useState(0);
   const [zoom, setZoom] = useState(1);
 
@@ -228,50 +228,50 @@ export function ComponentDiagram({ graph, onNodeSelect, selectedNodeId }: Compon
           height={svgHeight * zoom}
           className="bg-white dark:bg-gray-900"
         >
+          <defs>
+            <marker id="dep-arrow" markerWidth="8" markerHeight="8" refX="7" refY="2.5" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,5 L7,2.5 z" fill="#009688" fillOpacity="0.7" />
+            </marker>
+          </defs>
           <g transform={`scale(${zoom})`}>
-            {/* Dependency arrows (if enabled) */}
+            {/* Dependency arrows (curved bezier) */}
             {showDependencies && dependencies.map((dep, idx) => {
               const fromComp = filteredComponents.find(c => c.id === dep.from);
               const toComp = filteredComponents.find(c => c.id === dep.to);
-              
               if (!fromComp || !toComp) return null;
 
-              const x1 = fromComp.x + COMPONENT_WIDTH / 2;
-              const y1 = fromComp.y + COMPONENT_HEIGHT / 2;
-              const x2 = toComp.x + COMPONENT_WIDTH / 2;
-              const y2 = toComp.y + COMPONENT_HEIGHT / 2;
-              const midX = (x1 + x2) / 2;
-              const midY = (y1 + y2) / 2;
+              const sc = { x: fromComp.x + COMPONENT_WIDTH / 2, y: fromComp.y + COMPONENT_HEIGHT / 2 };
+              const tc = { x: toComp.x + COMPONENT_WIDTH / 2,   y: toComp.y + COMPONENT_HEIGHT / 2 };
+              const dx = tc.x - sc.x;
+              const dy = tc.y - sc.y;
+              const absDx = Math.abs(dx);
+              const absDy = Math.abs(dy);
+              const stagger = (idx % 5 - 2) * 14;
+
+              let sx, sy, ex, ey, d;
+              if (absDx >= absDy) {
+                sx = dx > 0 ? fromComp.x + COMPONENT_WIDTH : fromComp.x;
+                sy = sc.y + stagger;
+                ex = dx > 0 ? toComp.x : toComp.x + COMPONENT_WIDTH;
+                ey = tc.y + stagger;
+                const cp = Math.max(60, absDx * 0.4);
+                d = `M ${sx} ${sy} C ${sx + (dx > 0 ? cp : -cp)} ${sy}, ${ex + (dx > 0 ? -cp : cp)} ${ey}, ${ex} ${ey}`;
+              } else {
+                sx = sc.x + stagger;
+                sy = dy > 0 ? fromComp.y + COMPONENT_HEIGHT : fromComp.y;
+                ex = tc.x + stagger;
+                ey = dy > 0 ? toComp.y : toComp.y + COMPONENT_HEIGHT;
+                const cp = Math.max(60, absDy * 0.4);
+                d = `M ${sx} ${sy} C ${sx} ${sy + (dy > 0 ? cp : -cp)}, ${ex} ${ey + (dy > 0 ? -cp : cp)}, ${ex} ${ey}`;
+              }
+              const midX = (sx + ex) / 2;
+              const midY = (sy + ey) / 2;
 
               return (
                 <g key={`dep-${idx}`}>
-                  {/* Dashed line */}
-                  <line
-                    x1={x1}
-                    y1={y1}
-                    x2={x2}
-                    y2={y2}
-                    stroke="#009688"
-                    strokeWidth="2"
-                    strokeDasharray="6 3"
-                    opacity="0.5"
-                  />
-                  {/* Arrowhead */}
-                  <polygon
-                    points={`${x2},${y2} ${x2 - 8},${y2 - 4} ${x2 - 8},${y2 + 4}`}
-                    fill="#009688"
-                    opacity="0.5"
-                    transform={`rotate(${Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI}, ${x2}, ${y2})`}
-                  />
-                  {/* Label */}
-                  <text
-                    x={midX}
-                    y={midY}
-                    fontSize="10"
-                    fill="#009688"
-                    textAnchor="middle"
-                    className="pointer-events-none"
-                  >
+                  <path d={d} fill="none" stroke="#009688" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.55" markerEnd="url(#dep-arrow)" />
+                  <rect x={midX - 22} y={midY - 9} width={44} height={16} fill="white" fillOpacity="0.88" rx="3" />
+                  <text x={midX} y={midY + 3} fontSize="9" fill="#009688" textAnchor="middle" className="pointer-events-none">
                     {dep.sharedCount} shared
                   </text>
                 </g>

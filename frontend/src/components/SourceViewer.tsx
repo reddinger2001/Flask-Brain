@@ -65,9 +65,10 @@ export function SourceViewer({ filePath, lineNumber, onClose }: SourceViewerProp
 
           {error && (
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-              <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
-              <p className="text-xs text-red-600 dark:text-red-300 mt-2">
-                This feature requires the backend to implement the /api/source endpoint.
+              <p className="text-sm font-semibold text-red-800 dark:text-red-200">Could not load source file</p>
+              <p className="text-xs text-red-600 dark:text-red-300 mt-2 font-mono">{filePath}</p>
+              <p className="text-xs text-red-500 dark:text-red-400 mt-2">
+                The file may have been moved, deleted, or is outside the scanned project root. Try re-scanning.
               </p>
             </div>
           )}
