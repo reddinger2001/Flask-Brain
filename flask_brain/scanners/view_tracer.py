@@ -14,16 +14,18 @@ class ViewFunctionTracer(BaseScanner):
     def __init__(self, project_path: Path):
         super().__init__(project_path)
         self.view_functions: dict[str, dict[str, Any]] = {}
+        self.imports: dict[str, dict[str, str]] = {}  # file_path -> {name: module}
     
     def scan(self) -> tuple[list[Node], list[Edge]]:
         """Scan project for view functions and their call chains."""
         nodes = []
         edges = []
         
-        # First pass: identify view functions (functions with route decorators)
+        # First pass: identify view functions and collect imports
         for py_file in self._get_python_files():
             tree = self._parse_file(py_file)
             if tree:
+                self._collect_imports(tree, py_file)
                 self._identify_view_functions(tree, py_file)
         
         # Second pass: trace calls from view functions
@@ -35,6 +37,25 @@ class ViewFunctionTracer(BaseScanner):
                 edges.extend(file_edges)
         
         return nodes, edges
+    
+    def _collect_imports(self, tree: ast.Module, file_path: Path) -> None:
+        """Collect import statements from a file."""
+        if str(file_path) not in self.imports:
+            self.imports[str(file_path)] = {}
+        
+        for node in ast.walk(tree):
+            # from module import Name
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    name = alias.asname if alias.asname else alias.name
+                    self.imports[str(file_path)][name] = f"{module}.{alias.name}" if module else alias.name
+            
+            # import module
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.asname if alias.asname else alias.name
+                    self.imports[str(file_path)][name] = alias.name
     
     def _identify_view_functions(self, tree: ast.Module, file_path: Path) -> None:
         """Identify view functions by their route decorators."""
@@ -80,50 +101,81 @@ class ViewFunctionTracer(BaseScanner):
                     # Trace calls within the function
                     for call_node in ast.walk(node):
                         if isinstance(call_node, ast.Call):
-                            target = self._identify_call_target(call_node)
-                            if target:
+                            targets = self._identify_call_targets(call_node, file_path)
+                            for target, edge_type in targets:
                                 edge = Edge(
                                     source=f"action::{node.name}",
                                     target=target,
-                                    type=self._classify_edge_type(target)
+                                    type=edge_type
                                 )
                                 edges.append(edge)
         
         return nodes, edges
     
-    def _identify_call_target(self, call_node: ast.Call) -> str | None:
-        """Identify the target of a function call."""
+    def _identify_call_targets(self, call_node: ast.Call, file_path: Path) -> list[tuple[str, EdgeType]]:
+        """Identify the targets of a function call."""
+        targets = []
+        
         # Method call: obj.method()
         if isinstance(call_node.func, ast.Attribute):
             attr_name = call_node.func.attr
             
-            # Check if it's a service method
+            # Check if it's a method call on an object
             if isinstance(call_node.func.value, ast.Name):
                 obj_name = call_node.func.value.id
-                if "service" in obj_name.lower() or "repo" in obj_name.lower():
-                    # Assume it's calling a service
-                    return f"service::{obj_name}"
+                
+                # Check if object is an imported service
+                file_imports = self.imports.get(str(file_path), {})
+                if obj_name in file_imports:
+                    imported_module = file_imports[obj_name]
+                    # If imported from a service module, create service edge
+                    if "service" in imported_module.lower() or "Service" in imported_module:
+                        targets.append((f"service::{imported_module}.{attr_name}", EdgeType.CALLS))
+                    else:
+                        # Generic call
+                        targets.append((f"service::{imported_module}.{attr_name}", EdgeType.CALLS))
+                
+                # Check if it's a service instance (by naming convention)
+                elif "service" in obj_name.lower() or "repo" in obj_name.lower():
+                    targets.append((f"service::{obj_name}.{attr_name}", EdgeType.CALLS))
+                
+                # Check if it's a model query
+                elif attr_name in ("query", "filter", "filter_by", "all", "get", "first", "one"):
+                    targets.append((f"model::{obj_name}", EdgeType.USES_MODEL))
+                
+                # Check if it's a task dispatch
+                elif attr_name in ("delay", "apply_async"):
+                    targets.append((f"task::{obj_name}", EdgeType.DISPATCHES_TASK))
             
-            # Check if it's a model query
-            if attr_name in ("query", "filter", "filter_by", "all", "get"):
-                if isinstance(call_node.func.value, ast.Name):
-                    model_name = call_node.func.value.id
-                    return f"model::{model_name}"
-            
-            # Check if it's a task dispatch
-            if attr_name in ("delay", "apply_async"):
-                if isinstance(call_node.func.value, ast.Name):
-                    task_name = call_node.func.value.id
-                    return f"task::{task_name}"
+            # Check for db.session.* calls
+            elif isinstance(call_node.func.value, ast.Attribute):
+                if isinstance(call_node.func.value.value, ast.Name):
+                    obj_name = call_node.func.value.value.id
+                    middle_attr = call_node.func.value.attr
+                    
+                    # db.session.add(), db.session.query(), etc.
+                    if obj_name == "db" and middle_attr == "session":
+                        if attr_name in ("query", "execute"):
+                            # Try to extract model from arguments
+                            if call_node.args and isinstance(call_node.args[0], ast.Name):
+                                model_name = call_node.args[0].id
+                                targets.append((f"model::{model_name}", EdgeType.USES_MODEL))
         
         # Direct function call
         elif isinstance(call_node.func, ast.Name):
             func_name = call_node.func.id
-            # Check if it's a service function
-            if "service" in func_name.lower():
-                return f"service::{func_name}"
+            
+            # Check if it's an imported function
+            file_imports = self.imports.get(str(file_path), {})
+            if func_name in file_imports:
+                imported_module = file_imports[func_name]
+                targets.append((f"service::{func_name}", EdgeType.CALLS))
+            
+            # Check if it's a service function by naming convention
+            elif any(keyword in func_name.lower() for keyword in ["get_", "create_", "update_", "delete_", "list_", "find_"]):
+                targets.append((f"service::{func_name}", EdgeType.CALLS))
         
-        return None
+        return targets
     
     def _classify_edge_type(self, target: str) -> EdgeType:
         """Classify edge type based on target."""

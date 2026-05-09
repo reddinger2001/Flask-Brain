@@ -238,8 +238,10 @@ class GraphBuilder:
         from flask_brain.scanners.view_tracer import ViewFunctionTracer
         from flask_brain.scanners.service_scanner import ServiceScanner
         from flask_brain.scanners.celery_scanner import CeleryTaskScanner
+        from flask_brain.scanners.complexity_analyzer import ComplexityAnalyzer
+        from flask_brain.scanners.query_tracer import QueryTracer
         
-        # Run all scanners
+        # Run all scanners that create nodes and edges
         scanners = [
             RouteScanner(project_path),
             ModelScanner(project_path),
@@ -251,6 +253,13 @@ class GraphBuilder:
         for scanner in scanners:
             nodes, edges = scanner.scan()
             self.add_scanner_output(nodes, edges)
+        
+        # Enrich nodes with complexity and query metadata
+        complexity_analyzer = ComplexityAnalyzer(project_path)
+        complexity_analyzer.enrich(self.graph)
+        
+        query_tracer = QueryTracer(project_path)
+        query_tracer.enrich(self.graph)
         
         return self.graph
 
