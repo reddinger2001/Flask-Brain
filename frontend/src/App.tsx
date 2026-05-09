@@ -7,11 +7,12 @@ import { ERDView } from './components/ERDView';
 import { HeatmapView } from './components/HeatmapView';
 import { DeadWeightView } from './components/DeadWeightView';
 import { BlindSpotsView } from './components/BlindSpotsView';
+import { SearchView } from './components/SearchView';
 import { useGraph, useManifest } from './hooks/useGraph';
 import { useSSE } from './hooks/useSSE';
 import type { Node } from './types/graph';
 
-type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots';
+type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('graph');
@@ -143,6 +144,7 @@ function App() {
             { id: 'heatmap' as TabType, label: 'Heatmap', icon: '🔥' },
             { id: 'deadweight' as TabType, label: 'Dead Weight', icon: '💀' },
             { id: 'blindspots' as TabType, label: 'Blind Spots', icon: '🔍' },
+            { id: 'search' as TabType, label: 'Search', icon: '🔎' },
           ].map(tab => (
             <button
               key={tab.id}
@@ -187,6 +189,9 @@ function App() {
           )}
           {activeTab === 'blindspots' && (
             <BlindSpotsView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
+          )}
+          {activeTab === 'search' && (
+            <SearchView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
         </div>
 

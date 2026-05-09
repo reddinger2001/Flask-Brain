@@ -622,3 +622,120 @@ def test_impact_subgraph_no_callers():
     assert "route::GET /c" in sub_ids
     # No one calls routeC, so it's just the node itself
     assert len(sub_ids) == 1
+
+
+# ── search() tests ────────────────────────────────────────────────────────────
+
+def _make_search_graph() -> Graph:
+    """Build a graph with varied nodes for search testing."""
+    g = Graph()
+
+    route = Node("route::GET /users", NodeType.ROUTE, "GET /users", "routes/users.py", 1,
+                 metadata={"methods": ["GET"], "blueprint": "users"})
+    action = Node("action::list_users", NodeType.ACTION, "list_users", "views/users.py", 10,
+                  metadata={"complexity": 5, "blueprint": "users"})
+    svc = Node("service::user_service", NodeType.SERVICE, "user_service", "services/user.py", 1,
+               metadata={"complexity": 25})
+    model_user = Node("model::User", NodeType.MODEL, "User", "models/user.py", 1,
+                      metadata={"columns": {"id": {"type": "Integer"}}})
+    model_order = Node("model::Order", NodeType.MODEL, "Order", "models/order.py", 1)
+    task = Node("task::send_email", NodeType.TASK, "send_email", "tasks.py", 1)
+
+    for n in [route, action, svc, model_user, model_order, task]:
+        g.add_node(n)
+
+    # action uses User model
+    g.add_edge(Edge(action.id, model_user.id, EdgeType.USES_MODEL))
+    return g
+
+
+def test_search_free_text_label():
+    """Free text search matches on node label."""
+    g = _make_search_graph()
+    results = g.search("user_service")
+    assert any(n.id == "service::user_service" for n in results)
+
+
+def test_search_free_text_multiple_terms():
+    """All free-text terms must match (AND logic)."""
+    g = _make_search_graph()
+    # "user" appears in many; "service" narrows to service file
+    results = g.search("user service")
+    ids = {n.id for n in results}
+    assert "service::user_service" in ids
+    # route label "GET /users" does NOT contain "service"
+    assert "route::GET /users" not in ids
+
+
+def test_search_type_predicate():
+    """type= predicate filters to a specific node type."""
+    g = _make_search_graph()
+    results = g.search("type=route")
+    assert all(n.type == NodeType.ROUTE for n in results)
+    assert any(n.id == "route::GET /users" for n in results)
+
+
+def test_search_model_predicate():
+    """model= predicate finds nodes with a USES_MODEL edge to that model."""
+    g = _make_search_graph()
+    results = g.search("model=User")
+    ids = {n.id for n in results}
+    assert "action::list_users" in ids
+    # user_service has no uses_model edge
+    assert "service::user_service" not in ids
+
+
+def test_search_complexity_gt():
+    """complexity> predicate filters nodes by complexity."""
+    g = _make_search_graph()
+    results = g.search("complexity>10")
+    ids = {n.id for n in results}
+    assert "service::user_service" in ids  # cx=25 > 10
+    assert "action::list_users" not in ids  # cx=5 not > 10
+
+
+def test_search_complexity_lt():
+    """complexity< predicate works correctly."""
+    g = _make_search_graph()
+    results = g.search("complexity<10")
+    assert all((n.metadata.get("complexity") or 0) < 10 for n in results)
+
+
+def test_search_combined_predicate_and_text():
+    """Combining predicates and text terms applies AND logic."""
+    g = _make_search_graph()
+    results = g.search("type=action users")
+    ids = {n.id for n in results}
+    # list_users is an action and contains "users" in file_path
+    assert "action::list_users" in ids
+    # user_service is a service — should be excluded
+    assert "service::user_service" not in ids
+
+
+def test_search_empty_query():
+    """Empty query returns empty list."""
+    g = _make_search_graph()
+    assert g.search("") == []
+
+
+def test_search_no_match():
+    """Query that matches nothing returns empty list."""
+    g = _make_search_graph()
+    assert g.search("xyzzy_does_not_exist_12345") == []
+
+
+def test_search_limit():
+    """search() respects the limit parameter."""
+    g = Graph()
+    for i in range(20):
+        g.add_node(Node(f"service::svc_{i}", NodeType.SERVICE, f"svc_{i}", "s.py", i))
+    results = g.search("svc", limit=5)
+    assert len(results) == 5
+
+
+def test_search_sorted_by_label():
+    """search() results are sorted alphabetically by label."""
+    g = _make_search_graph()
+    results = g.search("type=model")
+    labels = [n.label for n in results]
+    assert labels == sorted(labels)

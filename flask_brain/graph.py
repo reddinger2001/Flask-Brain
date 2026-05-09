@@ -199,6 +199,96 @@ class Graph:
                 subgraph.add_node(node)
         return subgraph
 
+    def search(self, query: str, limit: int = 100) -> list[Node]:
+        """Search nodes using free-text and/or predicate syntax.
+
+        Predicate syntax (space-separated, all must match — AND logic):
+            type=route          node.type equals "route"
+            model=Contractor    node has a USES_MODEL edge to model::Contractor
+            blueprint=auth      node.metadata["blueprint"] equals "auth"
+            complexity>20       node.metadata["complexity"] > 20
+            complexity<10       node.metadata["complexity"] < 10
+            complexity=15       node.metadata["complexity"] == 15
+
+        Any token that is NOT a predicate is treated as a free-text term that
+        must appear in node.label or node.file_path (case-insensitive substring).
+
+        Args:
+            query:  The search string.
+            limit:  Maximum number of results to return.
+
+        Returns:
+            List of matching Node objects sorted by label.
+        """
+        import re
+
+        tokens = query.strip().split()
+        if not tokens:
+            return []
+
+        # Pre-build: set of (source, target_label) for uses_model edges
+        model_callers: dict[str, set[str]] = {}
+        for edge in self.edges:
+            if edge.type == EdgeType.USES_MODEL:
+                # target looks like "model::ModelName"
+                model_name = edge.target.split("::", 1)[-1].lower()
+                model_callers.setdefault(edge.source, set()).add(model_name)
+
+        predicate_re = re.compile(
+            r'^(type|model|blueprint|complexity)(=|>|<)(.+)$', re.IGNORECASE
+        )
+
+        predicates = []
+        text_terms = []
+        for token in tokens:
+            m = predicate_re.match(token)
+            if m:
+                predicates.append((m.group(1).lower(), m.group(2), m.group(3).lower()))
+            else:
+                text_terms.append(token.lower())
+
+        results = []
+        for node in self.nodes.values():
+            # ── Free-text filter ────────────────────────────────────────────
+            searchable = (node.label + " " + node.file_path).lower()
+            if text_terms and not all(t in searchable for t in text_terms):
+                continue
+
+            # ── Predicate filter ────────────────────────────────────────────
+            match = True
+            for field, op, value in predicates:
+                if field == "type":
+                    if op == "=" and node.type.value.lower() != value:
+                        match = False; break
+                elif field == "model":
+                    callers = model_callers.get(node.id, set())
+                    if op == "=" and value not in callers:
+                        match = False; break
+                elif field == "blueprint":
+                    bp = str(node.metadata.get("blueprint", "")).lower()
+                    if op == "=" and bp != value:
+                        match = False; break
+                elif field == "complexity":
+                    cx = node.metadata.get("complexity")
+                    if cx is None:
+                        match = False; break
+                    try:
+                        val_f = float(value)
+                        if op == ">" and not (float(cx) > val_f):
+                            match = False; break
+                        elif op == "<" and not (float(cx) < val_f):
+                            match = False; break
+                        elif op == "=" and float(cx) != val_f:
+                            match = False; break
+                    except ValueError:
+                        match = False; break
+
+            if match:
+                results.append(node)
+
+        results.sort(key=lambda n: n.label)
+        return results[:limit]
+
     def impact_subgraph(self, node_id: str, depth: int = 5) -> "Graph":
         """Return the reverse-walk subgraph: all nodes that depend on node_id.
 

@@ -136,6 +136,10 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             node_id = params.get("nodeId", [None])[0]
             depth = int(params.get("depth", [5])[0])
             self.serve_impact(node_id, depth)
+        elif path == "/api/search":
+            query = params.get("q", [""])[0]
+            limit = int(params.get("limit", [100])[0])
+            self.serve_search(query, limit)
         else:
             self.send_error(404, "API endpoint not found")
     
@@ -176,6 +180,27 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                 "nodes": [n.to_dict() for n in dead_nodes],
             }
             self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_search(self, query: str, limit: int = 100):
+        """Serve node search results for a query string with predicate support."""
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+
+            graph = Graph.from_dict(graph_data)
+            results = graph.search(query, limit=limit)
+            self._send_json({
+                "query": query,
+                "count": len(results),
+                "nodes": [n.to_dict() for n in results],
+            })
         except Exception as e:
             self._send_json_error(500, str(e))
 
