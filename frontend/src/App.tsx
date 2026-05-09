@@ -10,11 +10,14 @@ import { BlindSpotsView } from './components/BlindSpotsView';
 import { SearchView } from './components/SearchView';
 import { RiskView } from './components/RiskView';
 import { DiffView } from './components/DiffView';
+import ClassDiagram from './components/ClassDiagram';
+import { ComponentDiagram } from './components/ComponentDiagram';
+import { SequenceDiagramView } from './components/SequenceDiagramView';
 import { useGraph, useManifest } from './hooks/useGraph';
 import { useSSE } from './hooks/useSSE';
 import type { Node } from './types/graph';
 
-type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff';
+type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff' | 'classdiagram' | 'componentdiagram' | 'sequence';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('graph');
@@ -141,6 +144,9 @@ function App() {
         <div className="flex gap-1">
           {[
             { id: 'graph' as TabType, label: 'Graph', icon: '🕸️' },
+            { id: 'classdiagram' as TabType, label: 'Class Diagram', icon: '📐' },
+            { id: 'componentdiagram' as TabType, label: 'Components', icon: '🧩' },
+            { id: 'sequence' as TabType, label: 'Sequence', icon: '📋' },
             { id: 'routes' as TabType, label: 'Route Map', icon: '🗺️' },
             { id: 'erd' as TabType, label: 'ERD', icon: '🗄️' },
             { id: 'heatmap' as TabType, label: 'Heatmap', icon: '🔥' },
@@ -178,6 +184,15 @@ function App() {
               navigateTo={navigateToNode}
               manifest={manifest}
             />
+          )}
+          {activeTab === 'classdiagram' && (
+            <ClassDiagram graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
+          )}
+          {activeTab === 'componentdiagram' && (
+            <ComponentDiagram graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
+          )}
+          {activeTab === 'sequence' && (
+            <SequenceDiagramView graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
           {activeTab === 'routes' && (
             <RouteMap graph={graph} onRouteSelect={handleRouteSelect} selectedNodeId={selectedNode?.id || null} />
