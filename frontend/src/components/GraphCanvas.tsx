@@ -58,18 +58,19 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
     });
   }, [manifest?.scan_timestamp]);
 
-  // Initialize Cytoscape with only model nodes and has_relationship edges
+  // Initialize Cytoscape with all nodes and edges (fully expanded hierarchy)
   useEffect(() => {
     if (!containerRef.current || !graph) return;
 
-    // Get only model nodes initially
-    const modelNodes = graph.nodes.filter(n => n.type === 'model');
-    
-    // Get has_relationship edges between models
-    const modelIds = new Set(modelNodes.map(n => n.id));
-    const modelEdges = graph.edges.filter(
-      e => e.type === 'has_relationship' && modelIds.has(e.source) && modelIds.has(e.target)
-    );
+    // Load ALL nodes with rank data for dagre hierarchy
+    const allNodes = graph.nodes;
+    const allEdges = graph.edges;
+
+    // Pre-populate expanded state refs so collapse/expand tracking is accurate
+    allNodes.filter(n => n.type === 'blueprint').forEach(n => expandedBlueprintsRef.current.add(n.id));
+    allNodes.filter(n => n.type === 'route').forEach(n => expandedRoutesRef.current.add(n.id));
+    allNodes.filter(n => n.type === 'action' || n.type === 'service' || n.type === 'task').forEach(n => expandedActionsRef.current.add(n.id));
+    allNodes.filter(n => n.type === 'model').forEach(n => expandedModelsRef.current.add(n.id));
 
     // Build blueprint list for the left panel
     const blueprints = graph.nodes
@@ -81,20 +82,23 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
     const cy = cytoscape({
       container: containerRef.current,
       elements: {
-        nodes: modelNodes.map(node => ({
+        nodes: allNodes.map(node => ({
           data: {
             ...node,
             rank: RANK_MAP[node.type] ?? 2,
           },
         })),
-        edges: modelEdges.map(edge => ({
+        edges: allEdges.map(edge => ({
           data: {
             id: `${edge.source}-${edge.target}`,
             source: edge.source,
             target: edge.target,
             type: edge.type,
           },
-        })),
+        })).filter((e, _, arr) => {
+          // Drop duplicate edge IDs
+          return arr.findIndex(x => x.data.id === e.data.id) === arr.indexOf(e);
+        }),
       },
       style: [
         ...cytoscapeStyles,
