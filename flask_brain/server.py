@@ -3,6 +3,8 @@
 import json
 import webbrowser
 import mimetypes
+import subprocess
+import sys
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -11,40 +13,201 @@ import threading
 
 class FlaskBrainHandler(SimpleHTTPRequestHandler):
     """HTTP request handler for Flask Brain."""
-    
-    def __init__(self, *args, graph_dir: Path = None, viewer_dir: Path = None, **kwargs):
+
+    def __init__(self, *args, graph_dir: Path = None, viewer_dir: Path = None,
+                 project_path: Path = None, **kwargs):
         self.graph_dir = graph_dir or Path.cwd() / ".flask-brain"
         self.viewer_dir = viewer_dir or Path(__file__).parent / "viewer" / "dist"
+        self.project_path = project_path or Path.cwd()
         super().__init__(*args, **kwargs)
-    
+
     def do_GET(self):
         """Handle GET requests."""
-        parsed_path = urlparse(self.path)
-        path = parsed_path.path
-        
-        # Serve API endpoints
-        if path.startswith("/api/"):
-            self.serve_api(path, parsed_path.query)
-        # Serve static assets
-        elif path.startswith("/assets/"):
-            self.serve_static(path)
-        # Serve root HTML or SPA routes
-        elif path == "/" or path == "/index.html" or not "." in path.split("/")[-1]:
-            self.serve_html()
-        else:
-            self.serve_static(path)
-    
+        try:
+            parsed_path = urlparse(self.path)
+            path = parsed_path.path
+
+            if path.startswith("/api/"):
+                self.serve_api(path, parsed_path.query)
+            elif path.startswith("/assets/"):
+                self.serve_static(path)
+            elif path == "/" or path == "/index.html" or "." not in path.split("/")[-1]:
+                self.serve_html()
+            else:
+                self.serve_static(path)
+        except BrokenPipeError:
+            pass
+        except ConnectionResetError:
+            pass
+
+    def do_POST(self):
+        """Handle POST requests."""
+        try:
+            parsed_path = urlparse(self.path)
+            path = parsed_path.path
+
+            if path == "/api/scan":
+                self.handle_rescan()
+            else:
+                self.send_error(404, "API endpoint not found")
+        except BrokenPipeError:
+            pass
+        except ConnectionResetError:
+            pass
+
+    def handle_rescan(self):
+        """Trigger a rescan of the project."""
+        try:
+            from flask_brain.graph import GraphBuilder
+            builder = GraphBuilder()
+            graph = builder.build(self.project_path)
+            graph.write(self.graph_dir)
+
+            manifest_path = self.graph_dir / "manifest.json"
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(manifest).encode())
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
     def serve_api(self, path: str, query: str):
         """Serve API endpoints."""
-        if path == "/api/graph/all":
+        params = parse_qs(query)
+
+        if path == "/api/manifest":
+            self.serve_json_file("manifest.json")
+        elif path == "/api/graph/all":
             self.serve_json_file("graph-all.json")
         elif path == "/api/graph/routes":
             self.serve_json_file("graph-routes.json")
-        elif path == "/api/manifest":
-            self.serve_json_file("manifest.json")
+        elif path.startswith("/api/graph/"):
+            # Per-route subgraph: /api/graph/<safe-route-id>
+            route_id = path[len("/api/graph/"):]
+            self.serve_json_file(f"graph-{route_id}.json")
+        elif path == "/api/source":
+            file_path = params.get("path", [None])[0]
+            line = params.get("line", [1])[0]
+            self.serve_source(file_path, int(line))
+        elif path == "/api/context":
+            node_id = params.get("nodeId", [None])[0]
+            self.serve_context(node_id)
+        elif path == "/api/events":
+            self.serve_sse()
         else:
             self.send_error(404, "API endpoint not found")
     
+    def serve_source(self, file_path: str, line: int):
+        """Serve source file content."""
+        if not file_path:
+            self._send_json_error(400, "Missing 'path' parameter")
+            return
+
+        full_path = self.project_path / file_path
+        if not full_path.exists() or not full_path.is_file():
+            self._send_json_error(404, f"File not found: {file_path}")
+            return
+
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="replace")
+            response = {"content": content, "path": file_path, "line": line}
+            self._send_json(response)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_context(self, node_id: str):
+        """Serve AI context export for a node."""
+        if not node_id:
+            self._send_json_error(400, "Missing 'nodeId' parameter")
+            return
+
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+
+            # Find the node
+            node = next((n for n in graph_data["nodes"] if n["id"] == node_id), None)
+            if not node:
+                self._send_json_error(404, f"Node not found: {node_id}")
+                return
+
+            # Build a simple context block
+            lines = [
+                f"# Flask Brain — AI Context Export",
+                f"",
+                f"## Node",
+                f"- **ID:** `{node['id']}`",
+                f"- **Type:** {node['type']}",
+                f"- **Label:** {node['label']}",
+                f"- **File:** `{node['file_path']}` line {node['line_number']}",
+                f"",
+                f"## Metadata",
+            ]
+            for k, v in node.get("metadata", {}).items():
+                lines.append(f"- **{k}:** {v}")
+
+            # Find connected nodes (depth 1)
+            edges_from = [e for e in graph_data["edges"] if e["source"] == node_id]
+            edges_to = [e for e in graph_data["edges"] if e["target"] == node_id]
+
+            if edges_from:
+                lines += ["", "## Calls / Uses"]
+                for e in edges_from:
+                    lines.append(f"- `{e['target']}` ({e['type']})")
+
+            if edges_to:
+                lines += ["", "## Called By"]
+                for e in edges_to:
+                    lines.append(f"- `{e['source']}` ({e['type']})")
+
+            context_md = "\n".join(lines)
+            self._send_json({"context": context_md, "node_id": node_id})
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_sse(self):
+        """Serve Server-Sent Events stream (stub — watch mode not yet implemented)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        # Keep connection open briefly then close — watch mode not yet implemented
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _send_json(self, data: dict):
+        """Send a JSON response."""
+        body = json.dumps(data).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json_error(self, code: int, message: str):
+        """Send a JSON error response."""
+        body = json.dumps({"error": message}).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def serve_json_file(self, filename: str):
         """Serve a JSON file from the graph directory."""
         file_path = self.graph_dir / filename
@@ -115,20 +278,29 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
         pass
 
 
-def create_handler(graph_dir: Path, viewer_dir: Path = None):
+def create_handler(graph_dir: Path, viewer_dir: Path = None, project_path: Path = None):
     """Create a handler with the graph directory bound."""
     if viewer_dir is None:
         viewer_dir = Path(__file__).parent / "viewer" / "dist"
-    
+    if project_path is None:
+        project_path = graph_dir.parent
+
     class BoundHandler(FlaskBrainHandler):
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, graph_dir=graph_dir, viewer_dir=viewer_dir, **kwargs)
+            super().__init__(
+                *args,
+                graph_dir=graph_dir,
+                viewer_dir=viewer_dir,
+                project_path=project_path,
+                **kwargs,
+            )
     return BoundHandler
 
 
-def start_server(graph_dir: Path, port: int = 7891, open_browser: bool = True):
+def start_server(graph_dir: Path, port: int = 7891, open_browser: bool = True,
+                 project_path: Path = None):
     """Start the HTTP server."""
-    handler = create_handler(graph_dir)
+    handler = create_handler(graph_dir, project_path=project_path)
     server = HTTPServer(("localhost", port), handler)
     
     url = f"http://localhost:{port}"
