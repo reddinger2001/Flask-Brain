@@ -12,37 +12,38 @@ export function SequenceDiagram({ routeNode }: SequenceDiagramProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   
-  // Use same safeId derivation as GraphCanvas to match file names written by graph.py
-  const safeRouteId = routeNode.id.replace('::', '_').replace(/\//g, '_').replace(/ /g, '_');
+  // Use same safeId derivation as graph.py safe_id logic
+  const safeRouteId = routeNode.id
+    .replace('::', '_').replace(/\//g, '_').replace(/ /g, '_')
+    .replace(/</g, '').replace(/>/g, '').replace(/:/g, '_');
   const { graph, loading } = useGraph(`/api/graph/${safeRouteId}`);
 
   useEffect(() => {
     if (!graph || !containerRef.current) return;
 
-    try {
-      // Initialize mermaid
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
-        securityLevel: 'loose',
-      });
+    const render = async () => {
+      try {
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+          securityLevel: 'loose',
+        });
 
-      // Generate diagram
-      const diagramCode = generateSequenceDiagram(graph, routeNode);
-      
-      // Render
-      const id = `mermaid-${Date.now()}`;
-      containerRef.current.innerHTML = `<div class="mermaid" id="${id}">${diagramCode}</div>`;
-      
-      mermaid.run({
-        nodes: [document.getElementById(id)!],
-      });
-      
-      setError(null);
-    } catch (err) {
-      console.error('Error rendering sequence diagram:', err);
-      setError('Failed to render sequence diagram');
-    }
+        const diagramCode = generateSequenceDiagram(graph, routeNode);
+        console.debug('[SequenceDiagram] generated:\n', diagramCode);
+
+        const id = `mermaid-seq-${Date.now()}`;
+        const { svg } = await mermaid.render(id, diagramCode);
+        if (containerRef.current) {
+          containerRef.current.innerHTML = svg;
+        }
+        setError(null);
+      } catch (err) {
+        console.error('Error rendering sequence diagram:', err);
+        setError(`Failed to render sequence diagram: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    render();
   }, [graph, routeNode]);
 
   const handleExport = async () => {

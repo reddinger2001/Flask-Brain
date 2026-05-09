@@ -1,77 +1,21 @@
 import type { Graph, Node, Edge } from '../types/graph';
 
-export function generateSequenceDiagram(graph: Graph, routeNode: Node): string {
-  // Build a sequence diagram from the route node
-  const lines: string[] = ['sequenceDiagram'];
-  
-  // Find all nodes connected to this route
-  const visited = new Set<string>();
-  const sequence: Array<{ from: string; to: string; label: string }> = [];
-  
-  function traverse(nodeId: string, depth: number = 0) {
-    if (depth > 5 || visited.has(nodeId)) return;
-    visited.add(nodeId);
-    
-    const outgoingEdges = graph.edges.filter(e => e.source === nodeId);
-    
-    for (const edge of outgoingEdges) {
-      const targetNode = graph.nodes.find(n => n.id === edge.target);
-      if (!targetNode) continue;
-      
-      const sourceNode = graph.nodes.find(n => n.id === nodeId);
-      if (!sourceNode) continue;
-      
-      const fromLabel = getParticipantLabel(sourceNode);
-      const toLabel = getParticipantLabel(targetNode);
-      const edgeLabel = getEdgeLabel(edge, targetNode);
-      
-      sequence.push({ from: fromLabel, to: toLabel, label: edgeLabel });
-      
-      traverse(edge.target, depth + 1);
-    }
-  }
-  
-  // Start from the route node
-  lines.push('    participant Client');
-  lines.push(`    participant ${getParticipantLabel(routeNode)}`);
-  
-  // Add initial request
-  lines.push(`    Client->>+${getParticipantLabel(routeNode)}: ${routeNode.metadata.methods?.[0] || 'GET'} ${routeNode.label}`);
-  
-  // Traverse the graph
-  traverse(routeNode.id);
-  
-  // Add participants
-  const participants = new Set<string>();
-  sequence.forEach(({ from, to }) => {
-    participants.add(from);
-    participants.add(to);
-  });
-  
-  participants.forEach(p => {
-    if (p !== 'Client' && p !== getParticipantLabel(routeNode)) {
-      lines.push(`    participant ${p}`);
-    }
-  });
-  
-  // Add sequence calls
-  sequence.forEach(({ from, to, label }) => {
-    lines.push(`    ${from}->>+${to}: ${label}`);
-    lines.push(`    ${to}-->>-${from}: return`);
-  });
-  
-  // Add final response
-  lines.push(`    ${getParticipantLabel(routeNode)}-->>-Client: response`);
-  
-  return lines.join('\n');
+// Edge types that are meaningful in a sequence diagram.
+// Deliberately excludes 'has_relationship' (model↔model ORM links — too noisy).
+const SEQUENCE_EDGE_TYPES = new Set(['calls', 'uses_model', 'dispatches_task']);
+
+// Sanitise a label for use as a Mermaid participant alias (no spaces, colons, etc.)
+function toAlias(label: string): string {
+  return label.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
 }
 
-function getParticipantLabel(node: Node): string {
+// Human-readable display name for a node in the diagram
+function displayName(node: Node): string {
   switch (node.type) {
     case 'route':
-      return 'Route';
+      return node.label;          // e.g. "GET /dashboard"
     case 'action':
-      return node.label;
+      return node.label;          // view function name
     case 'service':
       return node.label;
     case 'model':
@@ -83,14 +27,116 @@ function getParticipantLabel(node: Node): string {
   }
 }
 
-function getEdgeLabel(edge: Edge, targetNode: Node): string {
+interface Step {
+  fromAlias: string;
+  toAlias: string;
+  label: string;
+  isAsync: boolean;  // dispatches_task → async arrow
+}
+
+export function generateSequenceDiagram(graph: Graph, routeNode: Node): string {
+  const nodeMap = new Map<string, Node>(graph.nodes.map(n => [n.id, n]));
+
+  // BFS from the route node, following only meaningful edge types.
+  // Stop at depth 3 to avoid explosion.
+  const steps: Step[] = [];
+  const visited = new Set<string>();
+  const participantOrder: string[] = [];  // insertion-order for declaration
+
+  const routeAlias = toAlias(routeNode.label);
+
+  function ensureParticipant(alias: string) {
+    if (!participantOrder.includes(alias)) {
+      participantOrder.push(alias);
+    }
+  }
+
+  // Seed
+  ensureParticipant('Client');
+  ensureParticipant(routeAlias);
+
+  function traverse(nodeId: string, depth: number) {
+    if (depth > 3 || visited.has(nodeId)) return;
+    visited.add(nodeId);
+
+    const outgoing = graph.edges.filter(
+      e => e.source === nodeId && SEQUENCE_EDGE_TYPES.has(e.type)
+    );
+
+    for (const edge of outgoing) {
+      const target = nodeMap.get(edge.target);
+      if (!target) continue;
+
+      const fromNode = nodeMap.get(nodeId)!;
+      const fromAlias = toAlias(displayName(fromNode));
+      const toAlias_ = toAlias(displayName(target));
+
+      ensureParticipant(fromAlias);
+      ensureParticipant(toAlias_);
+
+      const label = edgeLabel(edge, target);
+      const isAsync = edge.type === 'dispatches_task';
+      steps.push({ fromAlias, toAlias: toAlias_, label, isAsync });
+
+      traverse(edge.target, depth + 1);
+    }
+  }
+
+  traverse(routeNode.id, 0);
+
+  // ── Build the Mermaid source ─────────────────────────────────────────────
+  const lines: string[] = ['sequenceDiagram'];
+
+  // 1. Participant declarations (must come before any arrows)
+  for (const alias of participantOrder) {
+    // Use participant alias as display name, replacing _ back to spaces for readability
+    const display = alias.replace(/_/g, ' ');
+    lines.push(`    participant ${alias} as ${display}`);
+  }
+
+  // 2. Initial request arrow
+  const method = routeNode.metadata?.methods?.[0] ?? 'GET';
+  lines.push(`    Client->>${routeAlias}: ${method} ${routeNode.label}`);
+
+  // 3. Traversal arrows
+  if (steps.length === 0) {
+    // Nothing interesting downstream — at least show the action call if one exists
+    const actionEdge = graph.edges.find(
+      e => e.source === routeNode.id && e.type === 'calls'
+    );
+    if (actionEdge) {
+      const actionNode = nodeMap.get(actionEdge.target);
+      if (actionNode) {
+        const actionAlias = toAlias(displayName(actionNode));
+        lines.push(`    ${routeAlias}->>${actionAlias}: invoke`);
+        lines.push(`    ${actionAlias}-->>${routeAlias}: result`);
+      }
+    }
+  } else {
+    for (const step of steps) {
+      if (step.isAsync) {
+        lines.push(`    ${step.fromAlias}-)${step.toAlias}: ${step.label}`);
+      } else {
+        lines.push(`    ${step.fromAlias}->>${step.toAlias}: ${step.label}`);
+        lines.push(`    ${step.toAlias}-->>${step.fromAlias}: result`);
+      }
+    }
+  }
+
+  // 4. Final response back to client
+  lines.push(`    ${routeAlias}-->>Client: response`);
+
+  return lines.join('\n');
+}
+
+function edgeLabel(edge: Edge, target: Node): string {
   switch (edge.type) {
     case 'calls':
-      return targetNode.label;
+      return `call ${target.label}`;
     case 'uses_model':
-      return `query ${targetNode.label}`;
+      return `query ${target.label}`;
     case 'dispatches_task':
-      return `dispatch ${targetNode.label}`;
+      return `dispatch ${target.label}`;
     default:
       return edge.type;
   }

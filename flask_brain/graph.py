@@ -177,7 +177,9 @@ class Graph:
         for node_id, node in self.nodes.items():
             if node.type == NodeType.ROUTE:
                 route_graph = self._subgraph_from_node(node_id, depth=3)
-                safe_id = node_id.replace("::", "_").replace("/", "_").replace(" ", "_")
+                safe_id = (node_id.replace("::", "_").replace("/", "_")
+                           .replace(" ", "_").replace("<", "").replace(">", "")
+                           .replace(":", "_"))
                 with open(output_dir / f"graph-{safe_id}.json", "w") as f:
                     json.dump(route_graph.to_dict(), f, indent=2)
 
