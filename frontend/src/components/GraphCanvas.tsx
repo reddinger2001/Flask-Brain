@@ -661,17 +661,20 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo, m
                     if (next.has(type)) next.delete(type); else next.add(type);
                     return next;
                   })}
-                  className="px-2 py-0.5 rounded-full text-xs font-semibold border transition-all"
-                  style={{
-                    backgroundColor: hidden ? 'transparent' : (NODE_COLORS as any)[type] + '33',
+                  className="px-2 py-1 rounded-full text-xs font-bold border-2 transition-all select-none"
+                  style={hidden ? {
+                    backgroundColor: '#374151',
+                    borderColor: '#4B5563',
+                    color: '#6B7280',
+                    textDecoration: 'line-through',
+                  } : {
+                    backgroundColor: (NODE_COLORS as any)[type],
                     borderColor: (NODE_COLORS as any)[type],
-                    color: hidden ? '#888' : (NODE_COLORS as any)[type],
-                    textDecoration: hidden ? 'line-through' : 'none',
-                    opacity: hidden ? 0.5 : 1,
+                    color: '#fff',
                   }}
                   title={hidden ? `Show ${type}s` : `Hide ${type}s`}
                 >
-                  {type}
+                  {hidden ? '✕ ' : '● '}{type}
                 </button>
               );
             })}
