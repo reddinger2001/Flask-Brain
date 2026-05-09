@@ -88,3 +88,42 @@ def test_model_scanner_extracts_columns(flat_app_path):
     # Should have column details
     assert isinstance(columns, dict)
     assert len(columns) >= 3
+
+
+# ── Annotated assignment (AnnAssign) tests ────────────────────────────────────
+
+@pytest.fixture
+def annotated_app_path():
+    """Path to annotated_app fixture (PEP-526 style columns)."""
+    return Path(__file__).parent / "fixtures" / "annotated_app"
+
+
+def test_model_scanner_annotated_columns(annotated_app_path):
+    """Scanner must detect columns declared with type annotations (AnnAssign)."""
+    scanner = ModelScanner(annotated_app_path)
+    nodes, edges = scanner.scan()
+
+    model_nodes = [n for n in nodes if n.type == NodeType.MODEL]
+    assert len(model_nodes) == 1, "Should find exactly 1 model"
+
+    model = model_nodes[0]
+    assert model.id == "model::AnnotatedModel"
+
+    columns = model.metadata["columns"]
+    # All five annotated Column() attrs must be detected
+    assert "id" in columns, "id column missing"
+    assert "name" in columns, "name column missing"
+    assert "email" in columns, "email column missing"
+    assert "is_active" in columns, "is_active column missing"
+    assert "created_at" in columns, "created_at column missing"
+
+    # __abstract_flag__ is a plain bool annotation — must NOT be a column
+    assert "__abstract_flag__" not in columns
+
+
+def test_model_scanner_annotated_column_count(annotated_app_path):
+    """Column count must be 5 for AnnotatedModel — not 0."""
+    scanner = ModelScanner(annotated_app_path)
+    nodes, _ = scanner.scan()
+    model = next(n for n in nodes if n.id == "model::AnnotatedModel")
+    assert len(model.metadata["columns"]) == 5

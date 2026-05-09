@@ -1,12 +1,15 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useEffect } from 'react';
 import type { Graph, Node } from '../types/graph';
 
 interface RouteMapProps {
   graph: Graph;
   onRouteSelect: (routeNode: Node) => void;
+  selectedNodeId?: string | null;
 }
 
-export function RouteMap({ graph, onRouteSelect }: RouteMapProps) {
+export function RouteMap({ graph, onRouteSelect, selectedNodeId }: RouteMapProps) {
+  const selectedRouteRef = useRef<HTMLButtonElement>(null);
+
   const routesByBlueprint = useMemo(() => {
     const routes = graph.nodes.filter(n => n.type === 'route');
     const grouped = new Map<string, Node[]>();
@@ -26,6 +29,13 @@ export function RouteMap({ graph, onRouteSelect }: RouteMapProps) {
     
     return grouped;
   }, [graph]);
+
+  // Auto-scroll to selected route
+  useEffect(() => {
+    if (selectedNodeId && selectedRouteRef.current) {
+      selectedRouteRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [selectedNodeId]);
 
   const getMethodBadgeColor = (method: string) => {
     switch (method.toUpperCase()) {
@@ -61,37 +71,43 @@ export function RouteMap({ graph, onRouteSelect }: RouteMapProps) {
             </div>
 
             <div className="divide-y divide-gray-200 dark:divide-gray-700">
-              {routes.map(route => (
-                <button
-                  key={route.id}
-                  onClick={() => onRouteSelect(route)}
-                  className="w-full px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="flex gap-1">
-                      {route.metadata.methods?.map(method => (
-                        <span
-                          key={method}
-                          className={`px-2 py-1 rounded text-xs font-bold ${getMethodBadgeColor(method)}`}
-                        >
-                          {method}
-                        </span>
-                      ))}
+              {routes.map(route => {
+                const isSelected = route.id === selectedNodeId;
+                return (
+                  <button
+                    key={route.id}
+                    ref={isSelected ? selectedRouteRef : null}
+                    onClick={() => onRouteSelect(route)}
+                    className={`w-full px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left ${
+                      isSelected ? 'border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-900/20' : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex gap-1">
+                        {route.metadata.methods?.map(method => (
+                          <span
+                            key={method}
+                            className={`px-2 py-1 rounded text-xs font-bold ${getMethodBadgeColor(method)}`}
+                          >
+                            {method}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-mono text-sm text-gray-900 dark:text-white">{route.label}</p>
+                        {route.metadata.view_function && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            → {route.metadata.view_function}
+                          </p>
+                        )}
+                      </div>
+                      <svg className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
                     </div>
-                    <div className="flex-1">
-                      <p className="font-mono text-sm text-gray-900 dark:text-white">{route.label}</p>
-                      {route.metadata.view_function && (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                          → {route.metadata.view_function}
-                        </p>
-                      )}
-                    </div>
-                    <svg className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ))}

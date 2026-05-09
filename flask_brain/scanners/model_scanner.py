@@ -59,14 +59,15 @@ class ModelScanner(BaseScanner):
         columns = {}
         relationships = []
         
-        # Extract columns and relationships from class body
+        # Extract columns and relationships from class body.
+        # Two AST node shapes must be handled:
+        #   - ast.Assign:    name = db.Column(...)           (classic style)
+        #   - ast.AnnAssign: name: type = db.Column(...)     (PEP-526 annotated style)
         for item in class_node.body:
             if isinstance(item, ast.Assign):
                 for target in item.targets:
                     if isinstance(target, ast.Name):
                         col_name = target.id
-                        
-                        # Check if it's a Column
                         if isinstance(item.value, ast.Call):
                             if self._is_column_call(item.value):
                                 col_type = self._extract_column_type(item.value)
@@ -78,6 +79,22 @@ class ModelScanner(BaseScanner):
                                         "name": col_name,
                                         "target": rel_target
                                     })
+            elif isinstance(item, ast.AnnAssign):
+                # PEP-526 annotated assignment: `name: Type = db.Column(...)`
+                # item.target is a single Name node (not a list)
+                if isinstance(item.target, ast.Name) and item.value is not None:
+                    col_name = item.target.id
+                    if isinstance(item.value, ast.Call):
+                        if self._is_column_call(item.value):
+                            col_type = self._extract_column_type(item.value)
+                            columns[col_name] = {"type": col_type}
+                        elif self._is_relationship_call(item.value):
+                            rel_target = self._extract_relationship_target(item.value)
+                            if rel_target:
+                                relationships.append({
+                                    "name": col_name,
+                                    "target": rel_target
+                                })
         
         # Create model node
         node = Node(

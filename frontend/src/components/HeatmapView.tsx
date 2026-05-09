@@ -1,13 +1,16 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useEffect } from 'react';
 import { COMPLEXITY_COLORS } from '../utils/cytoscapeStyles';
 import type { Graph, Node } from '../types/graph';
 
 interface HeatmapViewProps {
   graph: Graph;
   onNodeSelect: (node: Node) => void;
+  selectedNodeId?: string | null;
 }
 
-export function HeatmapView({ graph, onNodeSelect }: HeatmapViewProps) {
+export function HeatmapView({ graph, onNodeSelect, selectedNodeId }: HeatmapViewProps) {
+  const selectedCardRef = useRef<HTMLButtonElement>(null);
+
   const functionsWithComplexity = useMemo(() => {
     return graph.nodes
       .filter(n => (n.type === 'action' || n.type === 'service') && n.metadata.complexity !== undefined)
@@ -22,6 +25,13 @@ export function HeatmapView({ graph, onNodeSelect }: HeatmapViewProps) {
     });
     return tiers;
   }, [functionsWithComplexity]);
+
+  // Auto-scroll to selected card
+  useEffect(() => {
+    if (selectedNodeId && selectedCardRef.current) {
+      selectedCardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [selectedNodeId]);
 
   if (functionsWithComplexity.length === 0) {
     return (
@@ -73,6 +83,7 @@ export function HeatmapView({ graph, onNodeSelect }: HeatmapViewProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {functionsWithComplexity.map(node => {
             const tier = node.metadata.complexity_tier || 'low';
+            const isSelected = node.id === selectedNodeId;
             const bgColor = {
               low: 'bg-green-50 dark:bg-green-900/20 border-green-500',
               moderate: 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-500',
@@ -83,8 +94,11 @@ export function HeatmapView({ graph, onNodeSelect }: HeatmapViewProps) {
             return (
               <button
                 key={node.id}
+                ref={isSelected ? selectedCardRef : null}
                 onClick={() => onNodeSelect(node)}
-                className={`${bgColor} border-2 rounded-lg p-4 text-left hover:shadow-lg transition-all`}
+                className={`${bgColor} border-2 rounded-lg p-4 text-left hover:shadow-lg transition-all ${
+                  isSelected ? 'ring-2 ring-blue-500 scale-[1.02]' : ''
+                }`}
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex-1">

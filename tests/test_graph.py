@@ -362,3 +362,170 @@ def test_graph_write_includes_scan_timestamp():
             # Verify it's a valid ISO datetime
             timestamp = datetime.fromisoformat(manifest["scan_timestamp"].replace('Z', '+00:00'))
             assert timestamp is not None
+
+
+# ── dead_weight() tests ───────────────────────────────────────────────────────
+
+def _make_graph_with_dead_nodes() -> Graph:
+    """Helper: build a small graph with one called and one uncalled service."""
+    g = Graph()
+    route = Node("route::GET /home", NodeType.ROUTE, "GET /home", "routes.py", 1)
+    called_svc = Node("service::active_svc", NodeType.SERVICE, "active_svc", "services.py", 10)
+    dead_svc = Node("service::dead_svc", NodeType.SERVICE, "dead_svc", "services.py", 30)
+    dead_action = Node("action::orphan_action", NodeType.ACTION, "orphan_action", "views.py", 5)
+    model = Node("model::User", NodeType.MODEL, "User", "models.py", 1)
+
+    g.add_node(route)
+    g.add_node(called_svc)
+    g.add_node(dead_svc)
+    g.add_node(dead_action)
+    g.add_node(model)
+
+    # route → called_svc (so called_svc has an incoming edge)
+    g.add_edge(Edge(route.id, called_svc.id, EdgeType.CALLS))
+    return g
+
+
+def test_dead_weight_returns_uncalled_nodes():
+    """dead_weight() should return SERVICE/ACTION/TASK nodes with no incoming edges."""
+    g = _make_graph_with_dead_nodes()
+    dead = g.dead_weight()
+    dead_ids = {n.id for n in dead}
+
+    assert "service::dead_svc" in dead_ids
+    assert "action::orphan_action" in dead_ids
+
+
+def test_dead_weight_excludes_called_nodes():
+    """dead_weight() must NOT include nodes that are targets of at least one edge."""
+    g = _make_graph_with_dead_nodes()
+    dead = g.dead_weight()
+    dead_ids = {n.id for n in dead}
+
+    assert "service::active_svc" not in dead_ids
+
+
+def test_dead_weight_excludes_routes_and_models():
+    """ROUTE and MODEL nodes must never appear in dead_weight results."""
+    g = _make_graph_with_dead_nodes()
+    dead = g.dead_weight()
+    for node in dead:
+        assert node.type not in (NodeType.ROUTE, NodeType.MODEL)
+
+
+def test_dead_weight_custom_node_types():
+    """dead_weight() with custom node_types should only check those types."""
+    g = _make_graph_with_dead_nodes()
+    # Only ask about SERVICE nodes
+    dead = g.dead_weight(node_types={NodeType.SERVICE})
+    dead_ids = {n.id for n in dead}
+
+    assert "service::dead_svc" in dead_ids
+    assert "action::orphan_action" not in dead_ids  # ACTION excluded from check
+
+
+def test_dead_weight_empty_graph():
+    """dead_weight() on an empty graph should return empty list."""
+    g = Graph()
+    assert g.dead_weight() == []
+
+
+def test_dead_weight_sorted():
+    """dead_weight() result must be sorted by (type, label)."""
+    g = Graph()
+    # Add several uncalled services/actions in non-alphabetical order
+    for label in ["z_svc", "a_svc", "m_svc"]:
+        g.add_node(Node(f"service::{label}", NodeType.SERVICE, label, "s.py", 1))
+
+    dead = g.dead_weight()
+    labels = [n.label for n in dead]
+    assert labels == sorted(labels)
+
+
+# ── blind_spots() tests ───────────────────────────────────────────────────────
+
+def _make_graph_with_blind_spots() -> Graph:
+    """Helper: build a graph mixing nodes with/without db_ops and model edges."""
+    g = Graph()
+
+    # Node WITH db ops AND a uses_model edge → NOT a blind spot
+    n_linked = Node("action::linked", NodeType.ACTION, "linked", "v.py", 1,
+                    metadata={"db_op_count": 3})
+    model = Node("model::User", NodeType.MODEL, "User", "m.py", 1)
+    g.add_node(n_linked)
+    g.add_node(model)
+    g.add_edge(Edge(n_linked.id, model.id, EdgeType.USES_MODEL))
+
+    # Node WITH db ops but NO uses_model edge → IS a blind spot
+    n_blind = Node("action::blind", NodeType.ACTION, "blind", "v.py", 10,
+                   metadata={"db_op_count": 5})
+    g.add_node(n_blind)
+
+    # Service WITH db ops but NO uses_model edge → IS a blind spot
+    n_svc = Node("service::svc_blind", NodeType.SERVICE, "svc_blind", "s.py", 1,
+                 metadata={"db_op_count": 2})
+    g.add_node(n_svc)
+
+    # Node with db_op_count = 0 → NOT a blind spot
+    n_clean = Node("action::clean", NodeType.ACTION, "clean", "v.py", 20,
+                   metadata={"db_op_count": 0})
+    g.add_node(n_clean)
+
+    # Node with no db_op_count key at all → NOT a blind spot
+    n_none = Node("action::no_ops", NodeType.ACTION, "no_ops", "v.py", 30)
+    g.add_node(n_none)
+
+    return g
+
+
+def test_blind_spots_detects_unresolved_db_callers():
+    """blind_spots() should return nodes with db ops but no USES_MODEL edge."""
+    g = _make_graph_with_blind_spots()
+    blind = g.blind_spots()
+    blind_ids = {n.id for n in blind}
+
+    assert "action::blind" in blind_ids
+    assert "service::svc_blind" in blind_ids
+
+
+def test_blind_spots_excludes_linked_nodes():
+    """blind_spots() must NOT include nodes that have a USES_MODEL edge."""
+    g = _make_graph_with_blind_spots()
+    blind = g.blind_spots()
+    blind_ids = {n.id for n in blind}
+
+    assert "action::linked" not in blind_ids
+
+
+def test_blind_spots_excludes_zero_db_ops():
+    """blind_spots() must not flag nodes with no DB operations."""
+    g = _make_graph_with_blind_spots()
+    blind = g.blind_spots()
+    blind_ids = {n.id for n in blind}
+
+    assert "action::clean" not in blind_ids
+    assert "action::no_ops" not in blind_ids
+
+
+def test_blind_spots_sorted_by_db_op_count_desc():
+    """blind_spots() result must be sorted descending by db_op_count."""
+    g = _make_graph_with_blind_spots()
+    blind = g.blind_spots()
+    counts = [n.metadata.get("db_op_count", 0) for n in blind]
+    assert counts == sorted(counts, reverse=True)
+
+
+def test_blind_spots_empty_graph():
+    """blind_spots() on an empty graph returns empty list."""
+    assert Graph().blind_spots() == []
+
+
+def test_blind_spots_custom_node_types():
+    """blind_spots() with custom node_types only checks those types."""
+    g = _make_graph_with_blind_spots()
+    # Only check ACTION nodes
+    blind = g.blind_spots(node_types={NodeType.ACTION})
+    blind_ids = {n.id for n in blind}
+
+    assert "action::blind" in blind_ids
+    assert "service::svc_blind" not in blind_ids  # SERVICE excluded

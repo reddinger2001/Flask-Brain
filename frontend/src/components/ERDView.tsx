@@ -1,19 +1,28 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import cytoscape, { Core } from 'cytoscape';
-import coseBilkent from 'cytoscape-cose-bilkent';
+import fcose from 'cytoscape-fcose';
 import { NODE_COLORS } from '../utils/cytoscapeStyles';
 import type { Graph, Node } from '../types/graph';
 
-cytoscape.use(coseBilkent);
+cytoscape.use(fcose);
 
 interface ERDViewProps {
   graph: Graph;
   onNodeSelect: (node: Node | null) => void;
+  selectedNodeId?: string | null;
 }
 
-export function ERDView({ graph, onNodeSelect }: ERDViewProps) {
+export function ERDView({ graph, onNodeSelect, selectedNodeId }: ERDViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const [hideIsolated, setHideIsolated] = useState(false);
+
+  // Helper to get node color based on column count
+  const getNodeColor = (columnCount: number): string => {
+    if (columnCount === 0 || columnCount <= 5) return '#5EEAD4'; // lighter teal
+    if (columnCount <= 15) return '#14B8A6'; // medium teal
+    return '#0D9488'; // darker/richer teal
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -26,14 +35,33 @@ export function ERDView({ graph, onNodeSelect }: ERDViewProps) {
       return;
     }
 
+    // Build a set of node IDs that have relationships
+    const connectedNodeIds = new Set<string>();
+    relationshipEdges.forEach(edge => {
+      connectedNodeIds.add(edge.source);
+      connectedNodeIds.add(edge.target);
+    });
+
+    // Filter nodes based on hideIsolated state
+    const visibleNodes = hideIsolated 
+      ? modelNodes.filter(n => connectedNodeIds.has(n.id))
+      : modelNodes;
+
     const cy = cytoscape({
       container: containerRef.current,
       elements: {
-        nodes: modelNodes.map(node => ({
-          data: {
-            ...node,
-          },
-        })),
+        nodes: visibleNodes.map(node => {
+          const columnCount = Object.keys(node.metadata?.columns || {}).length;
+          return {
+            data: {
+              ...node,
+              label: `${node.label}\n(${columnCount} cols)`,
+              columnCount,
+              backgroundColor: getNodeColor(columnCount),
+              columns: node.metadata?.columns || {},
+            },
+          };
+        }),
         edges: relationshipEdges.map(edge => ({
           data: {
             id: `${edge.source}-${edge.target}`,
@@ -48,7 +76,7 @@ export function ERDView({ graph, onNodeSelect }: ERDViewProps) {
         {
           selector: 'node',
           style: {
-            'background-color': NODE_COLORS.model,
+            'background-color': 'data(backgroundColor)',
             'label': 'data(label)',
             'color': '#fff',
             'text-valign': 'center',
@@ -97,11 +125,12 @@ export function ERDView({ graph, onNodeSelect }: ERDViewProps) {
 
     // Apply layout
     cy.layout({
-      name: 'cose-bilkent',
+      name: 'fcose',
       idealEdgeLength: 200,
       nodeRepulsion: 10000,
       padding: 50,
       randomize: false,
+      animate: false,
     } as any).run();
 
     // Handle node selection
@@ -116,15 +145,98 @@ export function ERDView({ graph, onNodeSelect }: ERDViewProps) {
       }
     });
 
+    // Handle node hover — tooltip with column list
+    let activeTooltip: HTMLDivElement | null = null;
+    let activeMouseMove: ((e: MouseEvent) => void) | null = null;
+
+    const removeTooltip = () => {
+      if (activeTooltip) { 
+        activeTooltip.remove(); 
+        activeTooltip = null; 
+      }
+      if (activeMouseMove) { 
+        document.removeEventListener('mousemove', activeMouseMove); 
+        activeMouseMove = null; 
+      }
+    };
+
+    cy.on('mouseover', 'node', (event) => {
+      removeTooltip();
+      const nodeData = event.target.data();
+      const columns = nodeData.columns || {};
+      const columnEntries = Object.entries(columns);
+      
+      const tooltip = document.createElement('div');
+      tooltip.className = 'fixed bg-gray-900 text-white px-3 py-2 rounded-lg text-sm shadow-lg z-50 pointer-events-none max-w-md max-h-96 overflow-y-auto';
+      
+      let tooltipHTML = `<div class="font-semibold mb-2">${nodeData.label.split('\n')[0]}</div>`;
+      
+      if (columnEntries.length > 0) {
+        tooltipHTML += '<div class="text-gray-300 text-xs space-y-1">';
+        columnEntries.forEach(([colName, colType]) => {
+          tooltipHTML += `<div><span class="font-mono">${colName}</span>: <span class="text-gray-400">${colType}</span></div>`;
+        });
+        tooltipHTML += '</div>';
+      } else {
+        tooltipHTML += '<div class="text-gray-400 text-xs">No columns</div>';
+      }
+      
+      tooltip.innerHTML = tooltipHTML;
+      document.body.appendChild(tooltip);
+      activeTooltip = tooltip;
+
+      activeMouseMove = (e: MouseEvent) => {
+        tooltip.style.left = `${e.clientX + 14}px`;
+        tooltip.style.top = `${e.clientY + 14}px`;
+      };
+      document.addEventListener('mousemove', activeMouseMove);
+    });
+
+    cy.on('mouseout', 'node', () => removeTooltip());
+
+    containerRef.current?.addEventListener('mouseleave', removeTooltip);
+
     return () => {
+      removeTooltip();
       cy.destroy();
     };
-  }, [graph, onNodeSelect]);
+  }, [graph, onNodeSelect, hideIsolated, getNodeColor]);
+
+  // Sync selection from other tabs
+  useEffect(() => {
+    if (!cyRef.current) return;
+    cyRef.current.nodes().removeClass('selected');
+    if (selectedNodeId) {
+      const elem = cyRef.current.getElementById(selectedNodeId);
+      if (elem.length) {
+        elem.addClass('selected');
+        cyRef.current.animate({ fit: { eles: elem.closedNeighborhood(), padding: 80 } }, { duration: 400 });
+      }
+    }
+  }, [selectedNodeId]);
 
   const handleFit = () => {
     if (cyRef.current) {
       cyRef.current.fit(undefined, 50);
     }
+  };
+
+  const handleSpread = () => {
+    if (cyRef.current) {
+      cyRef.current.layout({
+        name: 'fcose',
+        idealEdgeLength: 500,
+        nodeRepulsion: 10000,
+        padding: 50,
+        randomize: false,
+        animate: true,
+        animationDuration: 500,
+      } as any).run();
+    }
+  };
+
+  const handleToggleIsolated = () => {
+    setHideIsolated(!hideIsolated);
   };
 
   const handleExportPNG = () => {
@@ -179,6 +291,26 @@ export function ERDView({ graph, onNodeSelect }: ERDViewProps) {
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
           </svg>
+        </button>
+
+        <button
+          onClick={handleSpread}
+          className="px-3 py-2 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-white transition-colors"
+          title="Spread nodes further apart"
+        >
+          Spread
+        </button>
+
+        <button
+          onClick={handleToggleIsolated}
+          className={`px-3 py-2 border rounded-lg text-sm transition-colors ${
+            hideIsolated 
+              ? 'bg-blue-500 text-white border-blue-600 hover:bg-blue-600' 
+              : 'bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white'
+          }`}
+          title="Hide models with no relationships"
+        >
+          Hide isolated
         </button>
 
         <button

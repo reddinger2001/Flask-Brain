@@ -5,15 +5,18 @@ import { GraphCanvas } from './components/GraphCanvas';
 import { RouteMap } from './components/RouteMap';
 import { ERDView } from './components/ERDView';
 import { HeatmapView } from './components/HeatmapView';
+import { DeadWeightView } from './components/DeadWeightView';
+import { BlindSpotsView } from './components/BlindSpotsView';
 import { useGraph, useManifest } from './hooks/useGraph';
 import { useSSE } from './hooks/useSSE';
 import type { Node } from './types/graph';
 
-type TabType = 'graph' | 'routes' | 'erd' | 'heatmap';
+type TabType = 'graph' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('graph');
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [navigateToNode, setNavigateToNode] = useState<Node | null>(null);
   const [isDark, setIsDark] = useState(true);
   const [isRescanning, setIsRescanning] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -68,11 +71,17 @@ function App() {
   const handleRouteSelect = (routeNode: Node) => {
     setActiveTab('graph');
     setSelectedNode(routeNode);
+    setNavigateToNode(routeNode);
+    // Reset navigateToNode after a delay so repeat clicks still trigger the effect
+    setTimeout(() => setNavigateToNode(null), 500);
   };
 
   const handleHeatmapNodeSelect = (node: Node) => {
     setActiveTab('graph');
     setSelectedNode(node);
+    setNavigateToNode(node);
+    // Reset navigateToNode after a delay so repeat clicks still trigger the effect
+    setTimeout(() => setNavigateToNode(null), 500);
   };
 
   if (loading) {
@@ -132,6 +141,8 @@ function App() {
             { id: 'routes' as TabType, label: 'Route Map', icon: '🗺️' },
             { id: 'erd' as TabType, label: 'ERD', icon: '🗄️' },
             { id: 'heatmap' as TabType, label: 'Heatmap', icon: '🔥' },
+            { id: 'deadweight' as TabType, label: 'Dead Weight', icon: '💀' },
+            { id: 'blindspots' as TabType, label: 'Blind Spots', icon: '🔍' },
           ].map(tab => (
             <button
               key={tab.id}
@@ -158,16 +169,23 @@ function App() {
               graph={graph}
               onNodeSelect={handleNodeSelect}
               selectedNodeId={selectedNode?.id || null}
+              navigateTo={navigateToNode}
             />
           )}
           {activeTab === 'routes' && (
-            <RouteMap graph={graph} onRouteSelect={handleRouteSelect} />
+            <RouteMap graph={graph} onRouteSelect={handleRouteSelect} selectedNodeId={selectedNode?.id || null} />
           )}
           {activeTab === 'erd' && (
-            <ERDView graph={graph} onNodeSelect={handleNodeSelect} />
+            <ERDView graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
           {activeTab === 'heatmap' && (
-            <HeatmapView graph={graph} onNodeSelect={handleHeatmapNodeSelect} />
+            <HeatmapView graph={graph} onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
+          )}
+          {activeTab === 'deadweight' && (
+            <DeadWeightView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
+          )}
+          {activeTab === 'blindspots' && (
+            <BlindSpotsView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
         </div>
 

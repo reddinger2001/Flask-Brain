@@ -128,6 +128,10 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             self.serve_context(node_id)
         elif path == "/api/events":
             self.serve_sse()
+        elif path == "/api/analysis/dead-weight":
+            self.serve_dead_weight()
+        elif path == "/api/analysis/blind-spots":
+            self.serve_blind_spots()
         else:
             self.send_error(404, "API endpoint not found")
     
@@ -146,6 +150,50 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             content = full_path.read_text(encoding="utf-8", errors="replace")
             response = {"content": content, "path": file_path, "line": line}
             self._send_json(response)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_dead_weight(self):
+        """Serve dead-weight analysis: SERVICE/ACTION/TASK nodes with no callers."""
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+
+            graph = Graph.from_dict(graph_data)
+            dead_nodes = graph.dead_weight()
+
+            result = {
+                "count": len(dead_nodes),
+                "nodes": [n.to_dict() for n in dead_nodes],
+            }
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_blind_spots(self):
+        """Serve blind-spot analysis: nodes with DB ops but no resolved model edges."""
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+
+            graph = Graph.from_dict(graph_data)
+            blind_nodes = graph.blind_spots()
+
+            result = {
+                "count": len(blind_nodes),
+                "nodes": [n.to_dict() for n in blind_nodes],
+            }
+            self._send_json(result)
         except Exception as e:
             self._send_json_error(500, str(e))
 

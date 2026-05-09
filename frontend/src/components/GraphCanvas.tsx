@@ -11,6 +11,7 @@ interface GraphCanvasProps {
   graph: Graph;
   onNodeSelect: (node: Node | null) => void;
   selectedNodeId: string | null;
+  navigateTo?: Node | null;
 }
 
 interface Breadcrumb {
@@ -19,7 +20,7 @@ interface Breadcrumb {
   label: string;
 }
 
-export function GraphCanvas({ graph, onNodeSelect, selectedNodeId }: GraphCanvasProps) {
+export function GraphCanvas({ graph, onNodeSelect, selectedNodeId, navigateTo }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const onNodeSelectRef = useRef(onNodeSelect);
@@ -191,6 +192,187 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId }: GraphCanvas
     }
   }, [searchQuery]);
 
+  // Handle navigation from other tabs (RouteMap, Heatmap)
+  useEffect(() => {
+    if (!navigateTo) return;
+
+    // Wait for cyRef to be ready (in case we just switched tabs)
+    let attempts = 0;
+    const maxAttempts = 10;
+    const pollInterval = 50;
+
+    const waitForCy = () => {
+      if (cyRef.current) {
+        handleNavigation(navigateTo);
+      } else if (attempts < maxAttempts) {
+        attempts++;
+        setTimeout(waitForCy, pollInterval);
+      } else {
+        console.error('GraphCanvas: cyRef not ready after navigation');
+      }
+    };
+
+    waitForCy();
+  }, [navigateTo]);
+
+  const handleNavigation = async (node: Node, targetNodeId?: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    // If navigating to an action/service, remember it as the target
+    const finalTargetId = targetNodeId || (node.type === 'action' || node.type === 'service' ? node.id : undefined);
+
+    if (node.type === 'route') {
+      // Find which blueprint owns this route (may be null for orphan/test routes)
+      const bpEdge = graph.edges.find(e => e.target === node.id && e.type === 'registers_blueprint');
+      const blueprintId = bpEdge?.source;
+      const blueprintNode = blueprintId ? graph.nodes.find(n => n.id === blueprintId) : undefined;
+
+      if (blueprintId && !expandedBlueprintsRef.current.has(blueprintId)) {
+        // Expand blueprint first, then expand the route after layout settles
+        const routeEdges = graph.edges.filter(
+          e => e.source === blueprintId && e.type === 'registers_blueprint'
+        );
+        const routeIds = new Set(routeEdges.map(e => e.target));
+        const routeChildren = graph.nodes.filter(n => routeIds.has(n.id));
+
+        const toAdd: cytoscape.ElementDefinition[] = [];
+        routeChildren.forEach(route => {
+          if (!cy.getElementById(route.id).length) {
+            toAdd.push({ group: 'nodes', data: { ...route } });
+          }
+        });
+        routeEdges.forEach(edge => {
+          const edgeId = `${edge.source}-${edge.target}`;
+          if (!cy.getElementById(edgeId).length) {
+            toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
+          }
+        });
+        if (toAdd.length) cy.add(toAdd);
+        expandedBlueprintsRef.current.add(blueprintId);
+        runLayout(cy);
+
+        // Wait for layout to finish before expanding route
+        cy.one('layoutstop', () => {
+          expandRouteAndFinish(node.id, blueprintNode, finalTargetId);
+        });
+      } else {
+        // No blueprint (orphan route) or blueprint already expanded — expand route directly
+        expandRouteAndFinish(node.id, blueprintNode, finalTargetId);
+      }
+    } else if (node.type === 'action' || node.type === 'service') {
+      // Find which route calls this node
+      const callEdge = graph.edges.find(e => e.target === node.id && e.type === 'calls');
+      if (!callEdge) {
+        console.error('No route found for action/service:', node.id);
+        return;
+      }
+
+      const sourceNode = graph.nodes.find(n => n.id === callEdge.source);
+      if (sourceNode && sourceNode.type === 'route') {
+        // Navigate to the route that calls this node, but remember the original target
+        handleNavigation(sourceNode, node.id);
+      } else {
+        // Source might be another action — walk up the chain
+        let currentId = callEdge.source;
+        let routeNode: Node | undefined;
+        const visited = new Set<string>();
+
+        while (currentId && !visited.has(currentId)) {
+          visited.add(currentId);
+          const current = graph.nodes.find(n => n.id === currentId);
+          if (current?.type === 'route') {
+            routeNode = current;
+            break;
+          }
+          const parentEdge = graph.edges.find(e => e.target === currentId && e.type === 'calls');
+          currentId = parentEdge?.source || '';
+        }
+
+        if (routeNode) {
+          handleNavigation(routeNode, node.id);
+        } else {
+          console.error('Could not find route for action/service:', node.id);
+        }
+      }
+    }
+  };
+
+  const expandRouteAndFinish = async (routeId: string, blueprintNode: Node | undefined, targetNodeId?: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    // Expand route if not already expanded
+    if (!expandedRoutesRef.current.has(routeId)) {
+      const safeId = routeId.replace('::', '_').replace(/\//g, '_').replace(/ /g, '_').replace(/</g, '').replace(/>/g, '').replace(/:/g, '_');
+      try {
+        const response = await fetch(`/api/graph/${safeId}`);
+        if (!response.ok) {
+          console.error(`Failed to fetch route subgraph: ${response.statusText}`);
+          return;
+        }
+
+        const subgraph: Graph = await response.json();
+        const toAdd: cytoscape.ElementDefinition[] = [];
+
+        // Build set of all node IDs that will be present in cy after this add
+        const existingNodeIds = new Set<string>(cy.nodes().map(n => n.id()));
+        subgraph.nodes.forEach(node => {
+          if (!cy.getElementById(node.id).length) {
+            toAdd.push({ group: 'nodes', data: { ...node } });
+            existingNodeIds.add(node.id);
+          }
+        });
+        // Only add edges where both endpoints will exist (no dangling edges)
+        subgraph.edges.forEach(edge => {
+          const edgeId = `${edge.source}-${edge.target}`;
+          if (!cy.getElementById(edgeId).length &&
+              existingNodeIds.has(edge.source) &&
+              existingNodeIds.has(edge.target)) {
+            toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
+          }
+        });
+
+        if (toAdd.length) cy.add(toAdd);
+        expandedRoutesRef.current.add(routeId);
+        runLayout(cy);
+      } catch (error) {
+        console.error('Error fetching route subgraph:', error);
+        return;
+      }
+    }
+
+    // Update breadcrumbs
+    const routeNode = graph.nodes.find(n => n.id === routeId);
+    if (routeNode) {
+      const newBreadcrumbs: Breadcrumb[] = [{ type: 'all', label: 'All Blueprints' }];
+      if (blueprintNode) {
+        newBreadcrumbs.push({ type: 'blueprint', id: blueprintNode.id, label: blueprintNode.label });
+      }
+      newBreadcrumbs.push({ type: 'route', id: routeId, label: routeNode.label });
+      setBreadcrumbs(newBreadcrumbs);
+    }
+
+    // Select the target node (either the specified target or the route itself)
+    const nodeIdToSelect = targetNodeId || routeId;
+    onNodeSelectRef.current(graph.nodes.find(n => n.id === nodeIdToSelect) || null);
+
+    // After a short delay for layout to settle, fit the viewport to the expanded route + its children
+    setTimeout(() => {
+      const cy = cyRef.current;
+      if (!cy) return;
+      const targetElem = cy.getElementById(nodeIdToSelect);
+      const neighborhood = targetElem.closedNeighborhood();
+      if (neighborhood.length > 0) {
+        cy.fit(neighborhood, 80);
+      } else {
+        cy.fit(undefined, 50);
+      }
+      // Flash-highlight the target node so it's obvious
+      cy.getElementById(nodeIdToSelect).addClass('selected');
+    }, 500);
+  };
+
   const runLayout = (cy: Core) => {
     cy.layout({
       name: 'cose-bilkent',
@@ -273,7 +455,7 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId }: GraphCanvas
     if (isExpanded) {
       collapseRoute(routeId);
     } else {
-      const safeId = routeId.replace('::', '_').replace(/\//g, '_').replace(/ /g, '_');
+      const safeId = routeId.replace('::', '_').replace(/\//g, '_').replace(/ /g, '_').replace(/</g, '').replace(/>/g, '').replace(/:/g, '_');
       try {
         const response = await fetch(`/api/graph/${safeId}`);
         if (!response.ok) {
@@ -284,14 +466,18 @@ export function GraphCanvas({ graph, onNodeSelect, selectedNodeId }: GraphCanvas
         const subgraph: Graph = await response.json();
         const toAdd: cytoscape.ElementDefinition[] = [];
 
+        const existingNodeIds2 = new Set<string>(cy.nodes().map(n => n.id()));
         subgraph.nodes.forEach(node => {
           if (node.id !== routeId && !cy.getElementById(node.id).length) {
             toAdd.push({ group: 'nodes', data: { ...node } });
+            existingNodeIds2.add(node.id);
           }
         });
         subgraph.edges.forEach(edge => {
           const edgeId = `${edge.source}-${edge.target}`;
-          if (!cy.getElementById(edgeId).length) {
+          if (!cy.getElementById(edgeId).length &&
+              existingNodeIds2.has(edge.source) &&
+              existingNodeIds2.has(edge.target)) {
             toAdd.push({ group: 'edges', data: { id: edgeId, source: edge.source, target: edge.target, type: edge.type } });
           }
         });

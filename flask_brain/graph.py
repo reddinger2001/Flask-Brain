@@ -199,6 +199,76 @@ class Graph:
                 subgraph.add_node(node)
         return subgraph
 
+    def blind_spots(
+        self,
+        node_types: set[NodeType] | None = None,
+    ) -> list[Node]:
+        """Return nodes that make DB calls but have no resolved model edges.
+
+        These are ACTION, SERVICE, or TASK nodes where:
+          - metadata["db_op_count"] > 0  (query_tracer detected DB operations)
+          - BUT no outgoing edge of type USES_MODEL exists
+
+        This indicates the scanner detected database activity but could not
+        resolve the model name — a coverage gap worth highlighting.
+
+        Args:
+            node_types: Set of NodeType values to check. Defaults to
+                        {ACTION, SERVICE, TASK}.
+
+        Returns:
+            Sorted list of Node objects matching the blind-spot criteria.
+        """
+        if node_types is None:
+            node_types = {NodeType.ACTION, NodeType.SERVICE, NodeType.TASK}
+
+        # Build set of node IDs that have at least one USES_MODEL outgoing edge
+        has_model_edge: set[str] = {
+            e.source for e in self.edges if e.type == EdgeType.USES_MODEL
+        }
+
+        result = []
+        for node in self.nodes.values():
+            if node.type not in node_types:
+                continue
+            db_ops = node.metadata.get("db_op_count", 0) or 0
+            if db_ops > 0 and node.id not in has_model_edge:
+                result.append(node)
+
+        result.sort(key=lambda n: (-(n.metadata.get("db_op_count") or 0), n.label))
+        return result
+
+    def dead_weight(
+        self,
+        node_types: set[NodeType] | None = None,
+    ) -> list[Node]:
+        """Return nodes that have NO incoming edges (i.e. nothing calls them).
+
+        By default checks SERVICE, ACTION, and TASK nodes.
+        ROUTE nodes are deliberately excluded — they are entry-points by design.
+        MODEL and BLUEPRINT nodes are excluded — they are referenced by type, not called.
+
+        Args:
+            node_types: Set of NodeType values to check. Defaults to
+                        {SERVICE, ACTION, TASK}.
+
+        Returns:
+            Sorted list of Node objects with zero incoming edges.
+        """
+        if node_types is None:
+            node_types = {NodeType.SERVICE, NodeType.ACTION, NodeType.TASK}
+
+        # Build set of all node IDs that appear as an edge TARGET
+        targeted: set[str] = {e.target for e in self.edges}
+
+        result = []
+        for node in self.nodes.values():
+            if node.type in node_types and node.id not in targeted:
+                result.append(node)
+
+        result.sort(key=lambda n: (n.type.value, n.label))
+        return result
+
     def _subgraph_from_node(self, start_node_id: str, depth: int = 3) -> "Graph":
         """Create a subgraph by traversing from a starting node up to a given depth."""
         subgraph = Graph()

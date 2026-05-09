@@ -23,6 +23,7 @@ export interface NodeMetadata {
   line_count?: number;
   complexity_tier?: ComplexityTier;
   db_operations?: DBOperation[];
+  db_op_count?: number;
   service_methods?: string[];
   is_fat?: boolean;
   
