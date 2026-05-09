@@ -73,8 +73,8 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
 
     const cols = Math.ceil(Math.sqrt(nodeCount));
     const boxWidth = 200;
-    const horizontalSpacing = 80;
-    const verticalSpacing = 100;
+    const horizontalSpacing = 160;
+    const verticalSpacing = 140;
 
     visibleNodes.forEach((node, index) => {
       const col = index % cols;
@@ -138,37 +138,56 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
     });
   }, [relationshipEdges, nodeIdToBox]);
 
-  // Calculate edge paths
+  // Calculate edge paths with smart connection points and cubic bezier curves
   const edgePaths = useMemo(() => {
-    return visibleEdges.map(edge => {
+    return visibleEdges.map((edge, edgeIndex) => {
       const sourceBox = nodeIdToBox.get(edge.source)!;
       const targetBox = nodeIdToBox.get(edge.target)!;
 
-      // Start from center-right of source
-      const start: Point = {
-        x: sourceBox.x + sourceBox.width,
-        y: sourceBox.y + sourceBox.height / 2,
-      };
+      // Centers
+      const sc = { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 };
+      const tc = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 };
 
-      // End at center-left of target
-      const end: Point = {
-        x: targetBox.x,
-        y: targetBox.y + targetBox.height / 2,
-      };
+      const dx = tc.x - sc.x;
+      const dy = tc.y - sc.y;
 
-      // Calculate midpoint for label
-      const midpoint: Point = {
-        x: (start.x + end.x) / 2,
-        y: (start.y + end.y) / 2,
-      };
+      // Pick exit/entry point on the nearest facing edge of each box
+      // based on the dominant direction between the two centers
+      let start: Point, end: Point, cpOffset: number;
 
-      return {
-        edge,
-        start,
-        end,
-        midpoint,
-        label: edge.metadata.relationship_name || '',
-      };
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      // Small stagger per edge index so parallel edges don't overlap
+      const stagger = (edgeIndex % 5 - 2) * 18;
+
+      if (absDx >= absDy) {
+        // Primarily horizontal — exit from right/left sides
+        if (dx > 0) {
+          start = { x: sourceBox.x + sourceBox.width, y: sc.y + stagger };
+          end   = { x: targetBox.x,                   y: tc.y + stagger };
+        } else {
+          start = { x: sourceBox.x,                   y: sc.y + stagger };
+          end   = { x: targetBox.x + targetBox.width, y: tc.y + stagger };
+        }
+        cpOffset = Math.max(80, absDx * 0.45);
+        const d = `M ${start.x} ${start.y} C ${start.x + (dx > 0 ? cpOffset : -cpOffset)} ${start.y}, ${end.x + (dx > 0 ? -cpOffset : cpOffset)} ${end.y}, ${end.x} ${end.y}`;
+        const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 - 14 };
+        return { edge, d, midpoint: mid, label: edge.metadata.relationship_name || '' };
+      } else {
+        // Primarily vertical — exit from bottom/top sides
+        if (dy > 0) {
+          start = { x: sc.x + stagger, y: sourceBox.y + sourceBox.height };
+          end   = { x: tc.x + stagger, y: targetBox.y };
+        } else {
+          start = { x: sc.x + stagger, y: sourceBox.y };
+          end   = { x: tc.x + stagger, y: targetBox.y + targetBox.height };
+        }
+        cpOffset = Math.max(80, absDy * 0.45);
+        const d = `M ${start.x} ${start.y} C ${start.x} ${start.y + (dy > 0 ? cpOffset : -cpOffset)}, ${end.x} ${end.y + (dy > 0 ? -cpOffset : cpOffset)}, ${end.x} ${end.y}`;
+        const mid = { x: (start.x + end.x) / 2 + 6, y: (start.y + end.y) / 2 };
+        return { edge, d, midpoint: mid, label: edge.metadata.relationship_name || '' };
+      }
     });
   }, [visibleEdges, nodeIdToBox]);
 
@@ -467,7 +486,7 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
             transformOrigin: 'top left',
           }}
         >
-          {/* Arrow marker definition */}
+          {/* Arrow marker definitions */}
           <defs>
             <marker
               id="arrowhead"
@@ -485,14 +504,13 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
           {/* Render edges first (so they appear behind boxes) */}
           {edgePaths.map((path, index) => (
             <g key={index}>
-              {/* Edge line */}
-              <line
-                x1={path.start.x}
-                y1={path.start.y}
-                x2={path.end.x}
-                y2={path.end.y}
+              {/* Curved bezier edge */}
+              <path
+                d={path.d}
+                fill="none"
                 stroke="#F44336"
-                strokeWidth={2}
+                strokeWidth={1.8}
+                strokeOpacity={0.75}
                 markerEnd="url(#arrowhead)"
               />
 
@@ -503,21 +521,22 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
                     x={path.midpoint.x - 40}
                     y={path.midpoint.y - 10}
                     width={80}
-                    height={20}
+                    height={18}
                     fill="white"
+                    fillOpacity={0.92}
                     stroke="#F44336"
-                    strokeWidth={1}
+                    strokeWidth={0.8}
                     rx={3}
                   />
                   <text
                     x={path.midpoint.x}
-                    y={path.midpoint.y + 4}
+                    y={path.midpoint.y + 3}
                     textAnchor="middle"
-                    fontSize="10"
+                    fontSize="9"
                     fill="#F44336"
                     fontWeight="500"
                   >
-                    {path.label}
+                    {path.label.length > 14 ? path.label.slice(0, 13) + '…' : path.label}
                   </text>
                 </>
               )}
