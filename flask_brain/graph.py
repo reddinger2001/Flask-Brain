@@ -107,12 +107,15 @@ class Graph:
             self.nodes[node.id] = node
 
     def add_edge(self, edge: Edge) -> None:
-        """Add an edge to the graph. Avoid duplicates."""
-        # Check if edge already exists
+        """Add an edge to the graph. Silently drops edges with missing endpoints or duplicates."""
+        # Drop dangling edges — Cytoscape crashes on nonexistent source/target
+        if edge.source not in self.nodes or edge.target not in self.nodes:
+            return
+        # Deduplicate
         for existing_edge in self.edges:
-            if (existing_edge.source == edge.source and 
-                existing_edge.target == edge.target and 
-                existing_edge.type == edge.type):
+            if (existing_edge.source == edge.source and
+                    existing_edge.target == edge.target and
+                    existing_edge.type == edge.type):
                 return
         self.edges.append(edge)
 
@@ -212,9 +215,13 @@ class Graph:
 
             # Add outgoing edges and their targets
             for edge in self.get_edges_from(node_id):
-                subgraph.add_edge(edge)
                 if edge.target not in visited and current_depth < depth:
                     queue.append((edge.target, current_depth + 1))
+                # Only add the edge after both endpoints are (or will be) in the subgraph
+                target_node = self.get_node(edge.target)
+                if target_node:
+                    subgraph.add_node(target_node)
+                    subgraph.add_edge(edge)
 
         return subgraph
 
