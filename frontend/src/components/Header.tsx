@@ -79,6 +79,12 @@ export function Header({ manifest, onRescan, isRescanning, onThemeToggle, isDark
                 <span className="text-gray-500 dark:text-gray-400">Models:</span>
                 <span className="font-semibold text-gray-900 dark:text-white">{manifest.node_types.model || 0}</span>
               </div>
+              {(manifest.node_types.property || 0) > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500 dark:text-gray-400">Properties:</span>
+                  <span className="font-semibold text-cyan-600 dark:text-cyan-400">{manifest.node_types.property}</span>
+                </div>
+              )}
             </div>
           )}
 

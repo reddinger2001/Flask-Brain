@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { Node } from '../types/graph';
 
 interface PropertyTraceViewProps {
@@ -41,6 +41,15 @@ export function PropertyTraceView({ onNodeSelect }: PropertyTraceViewProps) {
   const [results, setResults] = useState<PropertyResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [lastQuery, setLastQuery] = useState('');
+  const [totalProperties, setTotalProperties] = useState<number | null>(null);
+
+  // On mount, check how many property nodes are in the current scan
+  useEffect(() => {
+    fetch('/api/properties/all')
+      .then(r => r.json())
+      .then(d => setTotalProperties(d.count ?? 0))
+      .catch(() => setTotalProperties(0));
+  }, []);
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) { setResults(null); return; }
@@ -85,8 +94,27 @@ export function PropertyTraceView({ onNodeSelect }: PropertyTraceViewProps) {
           </h2>
           <p className="text-gray-600 dark:text-gray-400 text-sm">
             Search for a variable or property name to trace it across the codebase
+            {totalProperties !== null && totalProperties > 0 && (
+              <span className="ml-2 text-cyan-600 dark:text-cyan-400 font-medium">
+                — {totalProperties.toLocaleString()} properties indexed
+              </span>
+            )}
           </p>
         </div>
+
+        {/* Rescan warning — shown when no property nodes exist in the current graph */}
+        {totalProperties === 0 && (
+          <div className="flex items-start gap-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 rounded-lg p-4">
+            <span className="text-2xl">⚠️</span>
+            <div>
+              <p className="font-semibold text-yellow-800 dark:text-yellow-300">No property data in current scan</p>
+              <p className="text-sm text-yellow-700 dark:text-yellow-400 mt-1">
+                Your graph was scanned before the Property Trace feature was added.
+                Re-run <code className="bg-yellow-100 dark:bg-yellow-900 px-1 rounded">flask-brain scan &lt;path&gt;</code> to index properties.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Search bar */}
         <div className="flex gap-3">
