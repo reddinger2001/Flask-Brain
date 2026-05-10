@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
-import { GraphCanvas } from './components/GraphCanvas';
 import { NodeGraph } from './components/NodeGraph';
 import { RouteTraceView } from './components/RouteTraceView';
 import { BlueprintDrillDown } from './components/BlueprintDrillDown';
@@ -20,12 +19,11 @@ import { useGraph, useManifest } from './hooks/useGraph';
 import { useSSE } from './hooks/useSSE';
 import type { Node } from './types/graph';
 
-type TabType = 'graph' | 'blueprints' | 'routetrace' | 'bpdrilldown' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff' | 'classdiagram' | 'componentdiagram' | 'sequence';
+type TabType = 'graph' | 'blueprints' | 'routetrace' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff' | 'classdiagram' | 'componentdiagram' | 'sequence';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('graph');
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
-  const [navigateToNode, setNavigateToNode] = useState<Node | null>(null);
   const [graphFocusNodeId, setGraphFocusNodeId] = useState<string | null>(null);
   const [isDark, setIsDark] = useState(true);
   const [isRescanning, setIsRescanning] = useState(false);
@@ -81,17 +79,15 @@ function App() {
   const handleRouteSelect = (routeNode: Node) => {
     setActiveTab('graph');
     setSelectedNode(routeNode);
-    setNavigateToNode(routeNode);
-    // Reset navigateToNode after a delay so repeat clicks still trigger the effect
-    setTimeout(() => setNavigateToNode(null), 500);
+    setGraphFocusNodeId(routeNode.id);
+    setTimeout(() => setGraphFocusNodeId(null), 500);
   };
 
   const handleHeatmapNodeSelect = (node: Node) => {
     setActiveTab('graph');
     setSelectedNode(node);
-    setNavigateToNode(node);
-    // Reset navigateToNode after a delay so repeat clicks still trigger the effect
-    setTimeout(() => setNavigateToNode(null), 500);
+    setGraphFocusNodeId(node.id);
+    setTimeout(() => setGraphFocusNodeId(null), 500);
   };
 
   const handleShowInGraph = (node: Node) => {
@@ -155,9 +151,8 @@ function App() {
         <div className="flex gap-1">
           {[
             { id: 'graph' as TabType, label: 'Graph', icon: '🕸️' },
-            { id: 'blueprints' as TabType, label: 'Blueprints', icon: '📦' },
+            { id: 'blueprints' as TabType, label: 'Blueprints', icon: '🔬' },
             { id: 'routetrace' as TabType, label: 'Route Trace', icon: '⚡' },
-            { id: 'bpdrilldown' as TabType, label: 'BP Explorer', icon: '🔬' },
             { id: 'classdiagram' as TabType, label: 'Class Diagram', icon: '📐' },
             { id: 'componentdiagram' as TabType, label: 'Components', icon: '🧩' },
             { id: 'sequence' as TabType, label: 'Sequence', icon: '📋' },
@@ -199,19 +194,10 @@ function App() {
             />
           )}
           {activeTab === 'blueprints' && (
-            <GraphCanvas
-              graph={graph}
-              onNodeSelect={handleNodeSelect}
-              selectedNodeId={selectedNode?.id || null}
-              navigateTo={navigateToNode}
-              manifest={manifest}
-            />
+            <BlueprintDrillDown graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
           {activeTab === 'routetrace' && (
             <RouteTraceView graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
-          )}
-          {activeTab === 'bpdrilldown' && (
-            <BlueprintDrillDown graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
           {activeTab === 'classdiagram' && (
             <ClassDiagram graph={graph} onNodeSelect={handleNodeSelect} selectedNodeId={selectedNode?.id || null} />
