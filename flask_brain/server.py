@@ -154,9 +154,16 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
         elif path == "/api/trace/blueprint":
             node_id = params.get("id", [None])[0]
             self.serve_blueprint_subgraph(node_id)
+        elif path == "/api/trace/node":
+            node_id = params.get("id", [None])[0]
+            self.serve_trace_node(node_id)
         elif path == "/api/locate":
             hint = params.get("hint", [""])[0]
             self.serve_locate(hint)
+        elif path == "/api/neighbors":
+            node_id = params.get("id", [None])[0]
+            depth = int(params.get("depth", [2])[0])
+            self.serve_neighbors(node_id, depth)
         else:
             self.send_error(404, "API endpoint not found")
     
@@ -399,6 +406,50 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                 graph_data = json.load(f)
             graph = Graph.from_dict(graph_data)
             result = graph.locate(hint)
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_trace_node(self, node_id: str | None):
+        """Serve forward+backward trace for any node: callers, callees, models, tasks."""
+        if not node_id:
+            self._send_json_error(400, "Missing 'id' parameter")
+            return
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+            graph = Graph.from_dict(graph_data)
+            try:
+                result = graph.trace_node(node_id)
+            except ValueError as e:
+                self._send_json_error(404, str(e))
+                return
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_neighbors(self, node_id: str | None, depth: int = 2):
+        """Serve bidirectional neighborhood subgraph around a node up to depth hops."""
+        if not node_id:
+            self._send_json_error(400, "Missing 'id' parameter")
+            return
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+            graph = Graph.from_dict(graph_data)
+            try:
+                result = graph.neighbors(node_id, depth=depth)
+            except ValueError as e:
+                self._send_json_error(404, str(e))
+                return
             self._send_json(result)
         except Exception as e:
             self._send_json_error(500, str(e))

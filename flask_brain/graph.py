@@ -636,6 +636,134 @@ class Graph:
             "candidate_services": top_services,
         }
 
+    def trace_node(self, node_id: str) -> dict:
+        """Trace any node forward (what it calls) and backward (what calls it).
+
+        Works for any node type — most useful for action, service, model, task.
+        For routes, prefer trace_route() which structures the chain by layer.
+
+        Returns:
+          {
+            node: Node dict,
+            callers:  list of Node dicts that have an outgoing edge TO this node,
+            callees:  list of Node dicts this node calls/uses (outgoing edges),
+            models_used: list of model Node dicts (uses_model edges from this node),
+            tasks_dispatched: list of task Node dicts (dispatches_task edges),
+            edges: list of all connecting Edge dicts,
+            summary: { caller_count, callee_count, model_count, task_count }
+          }
+
+        Raises ValueError if node_id not found.
+        """
+        node = self.get_node(node_id)
+        if not node:
+            raise ValueError(f"Node '{node_id}' not found")
+
+        # Outgoing edges from this node
+        out_edges = self.get_edges_from(node_id)
+        callee_ids = {e.target for e in out_edges if e.type == EdgeType.CALLS}
+        model_ids  = {e.target for e in out_edges if e.type == EdgeType.USES_MODEL}
+        task_ids   = {e.target for e in out_edges if e.type == EdgeType.DISPATCHES_TASK}
+
+        # Incoming edges to this node
+        in_edges = self.get_edges_to(node_id)
+        caller_ids = {e.source for e in in_edges}
+
+        all_node_ids = {node_id} | callee_ids | model_ids | task_ids | caller_ids
+        relevant_edges = [
+            e for e in self.edges
+            if e.source in all_node_ids and e.target in all_node_ids
+        ]
+
+        def _nodes(ids):
+            return sorted(
+                [self.get_node(i).to_dict() for i in ids if self.get_node(i)],
+                key=lambda n: n["label"],
+            )
+
+        return {
+            "node": node.to_dict(),
+            "callers": _nodes(caller_ids),
+            "callees": _nodes(callee_ids),
+            "models_used": _nodes(model_ids),
+            "tasks_dispatched": _nodes(task_ids),
+            "edges": [e.to_dict() for e in relevant_edges],
+            "summary": {
+                "caller_count": len(caller_ids),
+                "callee_count": len(callee_ids),
+                "model_count": len(model_ids),
+                "task_count": len(task_ids),
+            },
+        }
+
+    def neighbors(self, node_id: str, depth: int = 2) -> dict:
+        """Return the neighborhood subgraph around a node up to `depth` hops.
+
+        Walks BOTH directions (forward + backward) so the result shows
+        everything connected to the node within `depth` hops regardless of
+        edge direction.  Useful for ad-hoc structural questions like
+        "show me everything around model::User within 2 hops".
+
+        Args:
+            node_id: The focal node ID.
+            depth:   Number of hops in each direction (default 2, max 5).
+
+        Returns:
+          {
+            focal_node: Node dict,
+            nodes: list of all Node dicts in the neighborhood (including focal),
+            edges: list of all Edge dicts connecting those nodes,
+            stats: { node_count, edge_count, by_type: {type: count} }
+          }
+
+        Raises ValueError if node_id not found.
+        """
+        if node_id not in self.nodes:
+            raise ValueError(f"Node '{node_id}' not found")
+
+        depth = min(depth, 5)
+
+        visited: set[str] = set()
+        queue: list[tuple[str, int]] = [(node_id, 0)]
+
+        while queue:
+            current_id, d = queue.pop(0)
+            if current_id in visited or d > depth:
+                continue
+            visited.add(current_id)
+            if d >= depth:
+                continue
+            # Walk both outgoing and incoming edges
+            for edge in self.get_edges_from(current_id):
+                if edge.target not in visited:
+                    queue.append((edge.target, d + 1))
+            for edge in self.get_edges_to(current_id):
+                if edge.source not in visited:
+                    queue.append((edge.source, d + 1))
+
+        neighbor_nodes = [
+            self.nodes[nid].to_dict() for nid in visited if nid in self.nodes
+        ]
+        neighbor_edges = [
+            e.to_dict() for e in self.edges
+            if e.source in visited and e.target in visited
+        ]
+
+        by_type: dict[str, int] = {}
+        for n in neighbor_nodes:
+            by_type[n["type"]] = by_type.get(n["type"], 0) + 1
+
+        return {
+            "focal_node": self.nodes[node_id].to_dict(),
+            "nodes": neighbor_nodes,
+            "edges": neighbor_edges,
+            "stats": {
+                "node_count": len(neighbor_nodes),
+                "edge_count": len(neighbor_edges),
+                "by_type": by_type,
+            },
+        }
+
     def _subgraph_from_node(self, start_node_id: str, depth: int = 3) -> "Graph":
         """Create a subgraph by traversing from a starting node up to a given depth."""
         subgraph = Graph()
