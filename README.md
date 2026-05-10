@@ -29,7 +29,7 @@ Tested against real-world projects with 1,400+ nodes and 1,200+ edges.
 
 ```bash
 # Clone the repository
-git clone http://192.168.1.127:3000/Chris/flask-brain.git
+git clone https://github.com/reddinger2001/flask-brain.git
 cd flask-brain
 
 # Install (Python 3.10+)
@@ -416,9 +416,9 @@ flask-brain/
 
 ---
 
-## Forgejo Repository
+## Inspired By
 
-http://192.168.1.127:3000/Chris/flask-brain
+Flask Brain was inspired by [Laravel Brain](https://github.com/nicahzif/laravel-brain) — an architecture visualizer for Laravel projects. The concept of AST-driven, zero-execution scanning adapted here for the Python/Flask ecosystem.
 
 ---
 
