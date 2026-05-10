@@ -29,6 +29,8 @@ interface PropertyResult {
   has_deleter: boolean;
   orphaned_getter: boolean;
   orphaned_setter: boolean;
+  is_class_var: boolean;
+  is_instance_var: boolean;
   definitions: PropertyDefinition[];
   reads: PropertyUsage[];
   writes: PropertyUsage[];
@@ -171,28 +173,38 @@ export function PropertyTraceView({ onNodeSelect }: PropertyTraceViewProps) {
                           {prop.file_path}
                         </p>
                       </div>
-                      <div className="flex gap-2">
-                        <span
-                          className={`text-xs px-2 py-1 rounded font-medium ${
-                            prop.has_getter
-                              ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                              : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
-                          }`}
-                        >
-                          {prop.has_getter ? '✅' : '❌'} getter
-                        </span>
-                        <span
-                          className={`text-xs px-2 py-1 rounded font-medium ${
-                            prop.has_setter
-                              ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                              : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
-                          }`}
-                        >
-                          {prop.has_setter ? '✅' : '❌'} setter
-                        </span>
-                        {prop.has_deleter && (
+                      <div className="flex gap-2 flex-wrap">
+                        {/* Type badge — always shown */}
+                        {prop.is_class_var && (
+                          <span className="text-xs px-2 py-1 rounded font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400">
+                            class var
+                          </span>
+                        )}
+                        {prop.is_instance_var && !prop.is_class_var && (
                           <span className="text-xs px-2 py-1 rounded font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400">
+                            instance var
+                          </span>
+                        )}
+                        {/* Decorator badges — only shown when @property decorator exists */}
+                        {prop.has_getter && (
+                          <span className="text-xs px-2 py-1 rounded font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                            ✅ getter
+                          </span>
+                        )}
+                        {prop.has_setter && (
+                          <span className="text-xs px-2 py-1 rounded font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                            ✅ setter
+                          </span>
+                        )}
+                        {prop.has_deleter && (
+                          <span className="text-xs px-2 py-1 rounded font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
                             ✅ deleter
+                          </span>
+                        )}
+                        {/* Pure @property with no setter — flag it */}
+                        {prop.has_getter && !prop.has_setter && !prop.has_deleter && (
+                          <span className="text-xs px-2 py-1 rounded font-medium bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400">
+                            read-only
                           </span>
                         )}
                       </div>

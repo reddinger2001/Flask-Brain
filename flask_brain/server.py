@@ -504,6 +504,8 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                     "has_getter": node.metadata.get("has_getter", False),
                     "has_setter": node.metadata.get("has_setter", False),
                     "has_deleter": node.metadata.get("has_deleter", False),
+                    "is_class_var": node.metadata.get("is_class_var", False),
+                    "is_instance_var": node.metadata.get("is_instance_var", False),
                     "orphaned_getter": node.metadata.get("orphaned_getter", False),
                     "orphaned_setter": node.metadata.get("orphaned_setter", False),
                     "definitions": node.metadata.get("definitions", []),
