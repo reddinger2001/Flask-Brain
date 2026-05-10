@@ -29,7 +29,7 @@ Tested against real-world projects with 1,400+ nodes and 1,200+ edges.
 
 ```bash
 # Clone the repository
-git clone https://github.com/reddinger2001/flask-brain.git
+git clone https://github.com/reddinger2001/Flask-Brain.git
 cd flask-brain
 
 # Install (Python 3.10+)
