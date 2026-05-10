@@ -45,3 +45,13 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local dev — not for public consumption
+.opencode/
+openspec/
+start_server.py
+tour/
+server.log
+server.pid
+*.png
+nav-test.png
