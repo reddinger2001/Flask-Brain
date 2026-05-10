@@ -434,6 +434,208 @@ class Graph:
         result.sort(key=lambda n: (n.type.value, n.label))
         return result
 
+    def trace_route(self, route_id: str) -> dict:
+        """Return the full execution chain for a route: route → actions → services → models.
+        
+        Returns a dict with keys:
+          route: Node dict (the route itself)
+          actions: list of Node dicts (called via `calls` edges from route)
+          services: list of Node dicts (called via `calls` edges from actions, deduplicated)
+          models: list of Node dicts (touched via `uses_model` from route/actions/services, deduplicated)
+          edges: list of Edge dicts (all edges connecting nodes in the chain)
+        
+        Raises ValueError if route_id not found or node is not a route.
+        """
+        node = self.get_node(route_id)
+        if not node:
+            raise ValueError(f"Node '{route_id}' not found")
+        if node.type != NodeType.ROUTE:
+            raise ValueError(f"Node '{route_id}' is not a route (type: {node.type})")
+        
+        # actions: calls edges FROM route
+        action_ids = {
+            e.target for e in self.get_edges_from(route_id)
+            if e.type == EdgeType.CALLS and
+               self.get_node(e.target) and self.get_node(e.target).type == NodeType.ACTION
+        }
+        # services: calls edges FROM actions
+        service_ids = set()
+        for aid in action_ids:
+            for e in self.get_edges_from(aid):
+                if e.type == EdgeType.CALLS:
+                    t = self.get_node(e.target)
+                    if t and t.type == NodeType.SERVICE:
+                        service_ids.add(e.target)
+        # models: uses_model edges from route + actions + services
+        model_ids = set()
+        for src_id in {route_id} | action_ids | service_ids:
+            for e in self.get_edges_from(src_id):
+                if e.type == EdgeType.USES_MODEL:
+                    t = self.get_node(e.target)
+                    if t and t.type == NodeType.MODEL:
+                        model_ids.add(e.target)
+        
+        # collect all edges between these nodes
+        all_node_ids = {route_id} | action_ids | service_ids | model_ids
+        chain_edges = [
+            e for e in self.edges
+            if e.source in all_node_ids and e.target in all_node_ids
+        ]
+        
+        def _node(nid):
+            n = self.get_node(nid)
+            return n.to_dict() if n else None
+        
+        return {
+            "route": node.to_dict(),
+            "actions": [_node(i) for i in sorted(action_ids) if _node(i)],
+            "services": [_node(i) for i in sorted(service_ids) if _node(i)],
+            "models": [_node(i) for i in sorted(model_ids) if _node(i)],
+            "edges": [e.to_dict() for e in chain_edges],
+        }
+
+    def blueprint_subgraph(self, blueprint_id: str) -> dict:
+        """Return everything owned by a blueprint: routes, actions, services, models.
+        
+        Returns a dict with keys:
+          blueprint: Node dict
+          routes: list of Node dicts
+          actions: list of Node dicts (reachable from routes via calls)
+          services: list of Node dicts (reachable from actions via calls)
+          models: list of Node dicts (reachable via uses_model from routes/actions/services)
+          edges: list of all connecting Edge dicts
+          stats: { route_count, action_count, service_count, model_count }
+        
+        Raises ValueError if blueprint_id not found or node is not a blueprint.
+        """
+        bp_node = self.get_node(blueprint_id)
+        if not bp_node:
+            raise ValueError(f"Node '{blueprint_id}' not found")
+        if bp_node.type != NodeType.BLUEPRINT:
+            raise ValueError(f"Node '{blueprint_id}' is not a blueprint")
+        
+        bp_label = bp_node.label
+        
+        # routes: route nodes where metadata.blueprint == bp_label
+        route_nodes = [
+            n for n in self.nodes.values()
+            if n.type == NodeType.ROUTE and n.metadata.get("blueprint") == bp_label
+        ]
+        route_ids = {n.id for n in route_nodes}
+        
+        # actions from routes
+        action_ids = set()
+        for rid in route_ids:
+            for e in self.get_edges_from(rid):
+                if e.type == EdgeType.CALLS:
+                    t = self.get_node(e.target)
+                    if t and t.type == NodeType.ACTION:
+                        action_ids.add(e.target)
+        
+        # services from actions
+        service_ids = set()
+        for aid in action_ids:
+            for e in self.get_edges_from(aid):
+                if e.type == EdgeType.CALLS:
+                    t = self.get_node(e.target)
+                    if t and t.type == NodeType.SERVICE:
+                        service_ids.add(e.target)
+        
+        # models from routes + actions + services
+        model_ids = set()
+        for src_id in route_ids | action_ids | service_ids:
+            for e in self.get_edges_from(src_id):
+                if e.type == EdgeType.USES_MODEL:
+                    t = self.get_node(e.target)
+                    if t and t.type == NodeType.MODEL:
+                        model_ids.add(e.target)
+        
+        all_node_ids = {blueprint_id} | route_ids | action_ids | service_ids | model_ids
+        chain_edges = [
+            e for e in self.edges
+            if e.source in all_node_ids and e.target in all_node_ids
+        ]
+        
+        def _nodes(ids):
+            return sorted(
+                [self.get_node(i).to_dict() for i in ids if self.get_node(i)],
+                key=lambda n: n["label"]
+            )
+        
+        return {
+            "blueprint": bp_node.to_dict(),
+            "routes": _nodes(route_ids),
+            "actions": _nodes(action_ids),
+            "services": _nodes(service_ids),
+            "models": _nodes(model_ids),
+            "edges": [e.to_dict() for e in chain_edges],
+            "stats": {
+                "route_count": len(route_ids),
+                "action_count": len(action_ids),
+                "service_count": len(service_ids),
+                "model_count": len(model_ids),
+            }
+        }
+
+    def locate(self, hint: str) -> dict:
+        """Find the best-fit blueprint and service for a given feature hint.
+        
+        Scores blueprints and services by how many of their associated node labels/file_paths
+        contain the hint terms (space-separated, case-insensitive).
+        
+        Returns:
+          {
+            "hint": str,
+            "best_blueprint": Node dict or null,
+            "best_service": Node dict or null,
+            "candidate_blueprints": [{"node": Node dict, "score": int, "route_count": int}, ...] top 5,
+            "candidate_services": [{"node": Node dict, "score": int}, ...] top 5,
+          }
+        """
+        terms = [t.lower() for t in hint.strip().split() if t]
+        if not terms:
+            return {"hint": hint, "best_blueprint": None, "best_service": None,
+                    "candidate_blueprints": [], "candidate_services": []}
+        
+        def score_text(text: str) -> int:
+            t = text.lower()
+            return sum(1 for term in terms if term in t)
+        
+        # score blueprints: own label + all routes they own
+        blueprint_scores = []
+        for node in self.nodes.values():
+            if node.type != NodeType.BLUEPRINT:
+                continue
+            s = score_text(node.label) + score_text(node.file_path)
+            route_count = 0
+            for rn in self.nodes.values():
+                if rn.type == NodeType.ROUTE and rn.metadata.get("blueprint") == node.label:
+                    s += score_text(rn.label) + score_text(rn.file_path)
+                    route_count += 1
+            blueprint_scores.append({"node": node.to_dict(), "score": s, "route_count": route_count})
+        
+        blueprint_scores.sort(key=lambda x: -x["score"])
+        top_blueprints = [b for b in blueprint_scores[:5] if b["score"] > 0]
+        
+        # score services
+        service_scores = []
+        for node in self.nodes.values():
+            if node.type != NodeType.SERVICE:
+                continue
+            s = score_text(node.label) + score_text(node.file_path)
+            service_scores.append({"node": node.to_dict(), "score": s})
+        
+        service_scores.sort(key=lambda x: -x["score"])
+        top_services = [s for s in service_scores[:5] if s["score"] > 0]
+        
+        return {
+            "hint": hint,
+            "best_blueprint": top_blueprints[0]["node"] if top_blueprints else None,
+            "best_service": top_services[0]["node"] if top_services else None,
+            "candidate_blueprints": top_blueprints,
+            "candidate_services": top_services,
+        }
+
     def _subgraph_from_node(self, start_node_id: str, depth: int = 3) -> "Graph":
         """Create a subgraph by traversing from a starting node up to a given depth."""
         subgraph = Graph()

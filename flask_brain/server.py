@@ -148,6 +148,15 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             baseline_id = params.get("baseline", [None])[0]
             current_id = params.get("current", ["current"])[0]
             self.serve_diff(baseline_id, current_id)
+        elif path == "/api/trace/route":
+            node_id = params.get("id", [None])[0]
+            self.serve_trace_route(node_id)
+        elif path == "/api/trace/blueprint":
+            node_id = params.get("id", [None])[0]
+            self.serve_blueprint_subgraph(node_id)
+        elif path == "/api/locate":
+            hint = params.get("hint", [""])[0]
+            self.serve_locate(hint)
         else:
             self.send_error(404, "API endpoint not found")
     
@@ -328,6 +337,68 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                 "count": len(blind_nodes),
                 "nodes": [n.to_dict() for n in blind_nodes],
             }
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_trace_route(self, node_id: str | None):
+        """Serve execution chain for a route: route → actions → services → models."""
+        if not node_id:
+            self._send_json_error(400, "Missing 'id' parameter")
+            return
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+            graph = Graph.from_dict(graph_data)
+            try:
+                result = graph.trace_route(node_id)
+            except ValueError as e:
+                self._send_json_error(404, str(e))
+                return
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_blueprint_subgraph(self, node_id: str | None):
+        """Serve blueprint subgraph: blueprint → routes → actions → services → models."""
+        if not node_id:
+            self._send_json_error(400, "Missing 'id' parameter")
+            return
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+            graph = Graph.from_dict(graph_data)
+            try:
+                result = graph.blueprint_subgraph(node_id)
+            except ValueError as e:
+                self._send_json_error(404, str(e))
+                return
+            self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_locate(self, hint: str):
+        """Serve feature location: best-fit blueprint and service for a hint string."""
+        if not hint:
+            self._send_json_error(400, "Missing 'hint' parameter")
+            return
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+            graph = Graph.from_dict(graph_data)
+            result = graph.locate(hint)
             self._send_json(result)
         except Exception as e:
             self._send_json_error(500, str(e))
