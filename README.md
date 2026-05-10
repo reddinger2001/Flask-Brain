@@ -6,7 +6,7 @@ Interactive architecture visualizer for Flask/Python projects.
 
 Flask Brain is a standalone Python CLI tool that scans any Flask project using **pure AST analysis** — it never imports or executes your project code. It produces an interactive browser-based graph with multiple diagram types, AI context export, snapshot diffing, and a live watch mode.
 
-Tested against real-world projects with 1,400+ nodes and 1,200+ edges.
+Tested against real-world projects with 3,400+ nodes and 4,000+ edges.
 
 ---
 
@@ -15,9 +15,9 @@ Tested against real-world projects with 1,400+ nodes and 1,200+ edges.
 | Feature | Details |
 |---|---|
 | **AST-only scanning** | Analyzes Python code without executing it — safe for any codebase |
-| **7 specialized scanners** | Routes, models, services, tasks, complexity, query tracing, call chains |
+| **8 specialized scanners** | Routes, models, services, tasks, properties, complexity, query tracing, call chains |
 | **Interactive browser UI** | Served locally at `http://localhost:7891` via a pre-built React SPA |
-| **Multiple diagram types** | Graph, Route Map, ERD, Complexity Heatmap, Dead Weight, Blind Spots, Search, Risk, Diff |
+| **Multiple diagram types** | Graph, Route Map, ERD, Complexity Heatmap, Dead Weight, Blind Spots, Search, Risk, Properties, Diff |
 | **Git churn + risk scoring** | Enriches nodes with commit frequency and composite risk scores |
 | **Watch mode** | Auto-rescans on `.py` file changes and pushes live updates via SSE |
 | **AI context export** | Generates structured Markdown context for any node — ready for LLMs |
@@ -232,13 +232,14 @@ Once the server is running at `http://localhost:7891`:
 | **Blind Spots** | Nodes with no outgoing edges — functions that call nothing. |
 | **Search** | Free-text + predicate search across the full graph. Predicates: `type:`, `file:`, `label:`. AND logic. |
 | **Risk 🔥** | Top 50 highest-risk nodes ranked by composite score (complexity × churn × DB ops). Sortable. |
+| **Properties 🔍** | Search class properties and variables — shows type badges (class var, instance var, @property), getter/setter/deleter decorators, read-only warnings, and all definitions/reads/writes with source locations. |
 | **Diff 📊** | Visual diff between two snapshots — added/removed/modified nodes and edges with filter chips. |
 
 ---
 
 ## What Gets Detected
 
-Flask Brain uses 7 specialized scanners:
+Flask Brain uses 8 specialized scanners:
 
 ### RouteScanner
 - `@app.route` and `@bp.route` decorators
@@ -271,6 +272,13 @@ Flask Brain uses 7 specialized scanners:
 ### QueryTracer
 - `db.session.*`, `Model.query.*`, `select(Model)` patterns
 - Classifies each operation as `READ`, `WRITE`, or `DELETE`
+
+### PropertyScanner
+- `@property`, `@x.setter`, `@x.deleter` decorators on class methods
+- Class variables and instance variables (`self.x = ...`)
+- Cross-class attribute reads and writes
+- Flags orphaned getters (getter defined, no setter) and orphaned setters (setter defined, no getter)
+- Type classification: `class var`, `instance var`, or `@property` decorator
 
 ---
 
@@ -340,10 +348,11 @@ Three fixture Flask apps in `tests/fixtures/`:
 | `flat_app` | Single `app.py` with routes, models, and service functions |
 | `factory_app` | App factory pattern with blueprints and service classes |
 | `blueprint_app` | Domain-organized with multiple blueprints and Celery tasks |
+| `property_app` | Class properties, instance variables, and `@property` decorators |
 
 ### Test Suite
 
-190 tests, 1 skipped — covering all scanners, graph analysis methods, server endpoints, snapshot management, and diff engine.
+303 tests, 3 skipped — covering all scanners, graph analysis methods, server endpoints, snapshot management, and diff engine.
 
 ---
 
@@ -359,6 +368,7 @@ flask-brain scan /path/to/project
     ├─ CeleryTaskScanner    → async tasks
     ├─ ComplexityAnalyzer   → complexity metrics
     ├─ QueryTracer          → database operations
+    ├─ PropertyScanner      → class/instance vars, @property decorators
     └─ GitChurnAnalyzer     → commit frequency + risk scores
         │
         └─ GraphBuilder → unified graph
@@ -384,32 +394,34 @@ flask-brain/
 │   ├── context_export.py           # AI context generator (BFS-bounded)
 │   ├── diff.py                     # SnapshotManager, DiffEngine, GraphDiff
 │   ├── watcher.py                  # ProjectWatcher (debounced file watcher)
-│   └── scanners/
-│       ├── base.py
-│       ├── route_scanner.py
-│       ├── model_scanner.py
-│       ├── view_tracer.py
-│       ├── service_scanner.py
-│       ├── celery_scanner.py
-│       ├── complexity_analyzer.py
-│       ├── query_tracer.py
-│       └── git_churn_analyzer.py
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx
-│   │   ├── components/             # GraphView, RouteMapView, ERDView, HeatmapView,
-│   │   │                           # DeadWeightView, BlindSpotsView, SearchView,
-│   │   │                           # RiskView, DiffView
-│   │   └── types/graph.ts
-│   └── dist/                       # Pre-built React SPA (committed)
-├── tests/
-│   ├── fixtures/
-│   ├── test_graph.py
-│   ├── test_route_scanner.py
-│   ├── test_model_scanner.py
-│   ├── test_server.py
-│   ├── test_diff.py
-│   └── ...
+    │   └── scanners/
+    │       ├── base.py
+    │       ├── route_scanner.py
+    │       ├── model_scanner.py
+    │       ├── view_tracer.py
+    │       ├── service_scanner.py
+    │       ├── celery_scanner.py
+    │       ├── complexity_analyzer.py
+    │       ├── query_tracer.py
+    │       ├── property_scanner.py
+    │       └── git_churn_analyzer.py
+    ├── frontend/
+    │   ├── src/
+    │   │   ├── App.tsx
+    │   │   ├── components/             # GraphView, RouteMapView, ERDView, HeatmapView,
+    │   │   │                           # DeadWeightView, BlindSpotsView, SearchView,
+    │   │   │                           # RiskView, PropertyTraceView, DiffView
+    │   │   └── types/graph.ts
+    │   └── dist/                       # Pre-built React SPA (committed)
+    ├── tests/
+    │   ├── fixtures/
+    │   ├── test_graph.py
+    │   ├── test_route_scanner.py
+    │   ├── test_model_scanner.py
+    │   ├── test_property_scanner.py
+    │   ├── test_server.py
+    │   ├── test_diff.py
+    │   └── ...
 ├── pyproject.toml
 └── README.md
 ```
