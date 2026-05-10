@@ -1,6 +1,6 @@
-export type NodeType = 'blueprint' | 'route' | 'action' | 'service' | 'model' | 'task';
+export type NodeType = 'blueprint' | 'route' | 'action' | 'service' | 'model' | 'task' | 'property';
 
-export type EdgeType = 'calls' | 'registers_blueprint' | 'has_relationship' | 'uses_model' | 'dispatches_task';
+export type EdgeType = 'calls' | 'registers_blueprint' | 'has_relationship' | 'uses_model' | 'dispatches_task' | 'defines_property' | 'reads_property' | 'writes_property';
 
 export type ComplexityTier = 'low' | 'moderate' | 'high' | 'critical';
 

@@ -12,6 +12,7 @@ import { BlindSpotsView } from './components/BlindSpotsView';
 import { SearchView } from './components/SearchView';
 import { RiskView } from './components/RiskView';
 import { DiffView } from './components/DiffView';
+import { PropertyTraceView } from './components/PropertyTraceView';
 import ClassDiagram from './components/ClassDiagram';
 import { ComponentDiagram } from './components/ComponentDiagram';
 import { SequenceDiagramView } from './components/SequenceDiagramView';
@@ -19,7 +20,7 @@ import { useGraph, useManifest } from './hooks/useGraph';
 import { useSSE } from './hooks/useSSE';
 import type { Node } from './types/graph';
 
-type TabType = 'graph' | 'blueprints' | 'routetrace' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff' | 'classdiagram' | 'componentdiagram' | 'sequence';
+type TabType = 'graph' | 'blueprints' | 'routetrace' | 'routes' | 'erd' | 'heatmap' | 'deadweight' | 'blindspots' | 'search' | 'risk' | 'diff' | 'classdiagram' | 'componentdiagram' | 'sequence' | 'properties';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('graph');
@@ -162,6 +163,7 @@ function App() {
             { id: 'deadweight' as TabType, label: 'Dead Weight', icon: '💀' },
             { id: 'blindspots' as TabType, label: 'Blind Spots', icon: '🔍' },
             { id: 'search' as TabType, label: 'Search', icon: '🔎' },
+            { id: 'properties' as TabType, label: 'Properties', icon: '🔍' },
             { id: 'risk' as TabType, label: 'Risk', icon: '🔥' },
             { id: 'diff' as TabType, label: 'Diff', icon: '📊' },
           ].map(tab => (
@@ -225,6 +227,9 @@ function App() {
           )}
           {activeTab === 'search' && (
             <SearchView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
+          )}
+          {activeTab === 'properties' && (
+            <PropertyTraceView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />
           )}
           {activeTab === 'risk' && (
             <RiskView onNodeSelect={handleHeatmapNodeSelect} selectedNodeId={selectedNode?.id || null} />

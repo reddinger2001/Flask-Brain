@@ -21,6 +21,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   service: 'Service',
   model: 'Model',
   task: 'Task',
+  property: 'Property',
 };
 
 export function GraphToolbar({

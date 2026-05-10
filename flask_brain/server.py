@@ -164,6 +164,11 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             node_id = params.get("id", [None])[0]
             depth = int(params.get("depth", [2])[0])
             self.serve_neighbors(node_id, depth)
+        elif path == "/api/trace/property":
+            name = params.get("name", [""])[0]
+            self.serve_trace_property(name)
+        elif path == "/api/properties/all":
+            self.serve_all_properties()
         else:
             self.send_error(404, "API endpoint not found")
     
@@ -451,6 +456,91 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                 self._send_json_error(404, str(e))
                 return
             self._send_json(result)
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_trace_property(self, name: str):
+        """Serve property trace: all property nodes matching the query name."""
+        if not name:
+            self._send_json_error(400, "Missing 'name' parameter")
+            return
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+            graph = Graph.from_dict(graph_data)
+            
+            # Find all property nodes matching the name (case-insensitive, partial match)
+            query_lower = name.lower()
+            matching_nodes = [
+                n for n in graph.nodes.values()
+                if n.type.value == "property" and query_lower in n.label.lower()
+            ]
+            
+            results = []
+            for node in matching_nodes:
+                # Find readers and writers
+                readers = []
+                writers = []
+                for edge in graph.edges:
+                    if edge.target == node.id:
+                        if edge.type.value == "reads_property":
+                            source_node = graph.get_node(edge.source)
+                            if source_node:
+                                readers.append(source_node.label)
+                        elif edge.type.value == "writes_property":
+                            source_node = graph.get_node(edge.source)
+                            if source_node:
+                                writers.append(source_node.label)
+                
+                results.append({
+                    "node_id": node.id,
+                    "class_name": node.metadata.get("class_name", ""),
+                    "prop_name": node.metadata.get("prop_name", ""),
+                    "file_path": node.file_path,
+                    "has_getter": node.metadata.get("has_getter", False),
+                    "has_setter": node.metadata.get("has_setter", False),
+                    "has_deleter": node.metadata.get("has_deleter", False),
+                    "orphaned_getter": node.metadata.get("orphaned_getter", False),
+                    "orphaned_setter": node.metadata.get("orphaned_setter", False),
+                    "definitions": node.metadata.get("definitions", []),
+                    "reads": node.metadata.get("reads", []),
+                    "writes": node.metadata.get("writes", []),
+                    "readers": list(set(readers)),
+                    "writers": list(set(writers)),
+                })
+            
+            self._send_json({
+                "query": name,
+                "results": results,
+            })
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def serve_all_properties(self):
+        """Serve all property nodes for building search index."""
+        try:
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+            graph = Graph.from_dict(graph_data)
+            
+            # Get all property nodes
+            property_nodes = [
+                n.to_dict() for n in graph.nodes.values()
+                if n.type.value == "property"
+            ]
+            
+            self._send_json({
+                "count": len(property_nodes),
+                "properties": property_nodes,
+            })
         except Exception as e:
             self._send_json_error(500, str(e))
 

@@ -5,6 +5,7 @@ export const NODE_COLORS: Record<string, string> = {
   service: '#9C27B0',
   model: '#F44336',
   task: '#FF9800',
+  property: '#00BCD4',
 };
 
 export const COMPLEXITY_COLORS: Record<string, string> = {
@@ -102,6 +103,30 @@ export const cytoscapeStyles: any[] = [
       'line-style': 'dashed',
       'line-color': '#FF9800',
       'target-arrow-color': '#FF9800',
+    },
+  },
+  {
+    selector: 'edge[type="defines_property"]',
+    style: {
+      'line-style': 'solid',
+      'line-color': '#00BCD4',
+      'target-arrow-color': '#00BCD4',
+    },
+  },
+  {
+    selector: 'edge[type="reads_property"]',
+    style: {
+      'line-style': 'dotted',
+      'line-color': '#00BCD4',
+      'target-arrow-color': '#00BCD4',
+    },
+  },
+  {
+    selector: 'edge[type="writes_property"]',
+    style: {
+      'line-style': 'dashed',
+      'line-color': '#00BCD4',
+      'target-arrow-color': '#00BCD4',
     },
   },
 ];

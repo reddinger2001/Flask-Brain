@@ -17,6 +17,7 @@ class NodeType(str, Enum):
     MODEL = "model"
     TASK = "task"
     RELATIONSHIP = "relationship"
+    PROPERTY = "property"
 
 
 class EdgeType(str, Enum):
@@ -26,6 +27,9 @@ class EdgeType(str, Enum):
     HAS_RELATIONSHIP = "has_relationship"
     DISPATCHES_TASK = "dispatches_task"
     REGISTERS_BLUEPRINT = "registers_blueprint"
+    DEFINES_PROPERTY = "defines_property"
+    READS_PROPERTY = "reads_property"
+    WRITES_PROPERTY = "writes_property"
 
 
 @dataclass
@@ -815,6 +819,7 @@ class GraphBuilder:
         from flask_brain.scanners.celery_scanner import CeleryTaskScanner
         from flask_brain.scanners.complexity_analyzer import ComplexityAnalyzer
         from flask_brain.scanners.query_tracer import QueryTracer
+        from flask_brain.scanners.property_scanner import PropertyScanner
         
         # Run all scanners that create nodes and edges
         scanners = [
@@ -823,6 +828,7 @@ class GraphBuilder:
             ViewFunctionTracer(project_path),
             ServiceScanner(project_path),
             CeleryTaskScanner(project_path),
+            PropertyScanner(project_path),
         ]
         
         for scanner in scanners:
