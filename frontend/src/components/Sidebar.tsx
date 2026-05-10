@@ -42,20 +42,44 @@ export function Sidebar({ node, onClose, onNavigate, onShowInGraph }: SidebarPro
       const data = await response.json();
       const context = data.context ?? JSON.stringify(data, null, 2);
 
-      // Try modern clipboard API first; fall back to textarea trick for http:// origins
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(context);
-      } else {
+      // Universal clipboard copy — tries each method in order, falls through on failure.
+      // Works across Chrome, Firefox, Safari, on macOS, Windows, Linux, iOS.
+      let copied = false;
+
+      // Method 1: clipboard.write() with ClipboardItem — required by Safari, works in Chrome
+      if (!copied && navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'text/plain': new Blob([context], { type: 'text/plain' }) }),
+          ]);
+          copied = true;
+        } catch { /* fall through */ }
+      }
+
+      // Method 2: clipboard.writeText() — works in Chrome and Firefox
+      if (!copied && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(context);
+          copied = true;
+        } catch { /* fall through */ }
+      }
+
+      // Method 3: execCommand — legacy fallback, works in older browsers
+      if (!copied) {
         const ta = document.createElement('textarea');
         ta.value = context;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
+        ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
         document.body.appendChild(ta);
         ta.focus();
         ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
+        try {
+          copied = document.execCommand('copy');
+        } finally {
+          document.body.removeChild(ta);
+        }
       }
+
+      if (!copied) throw new Error('Clipboard not supported in this browser');
 
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
