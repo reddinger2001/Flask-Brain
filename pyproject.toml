@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "Chris Reddinger", email = "reddinger2001@live.com"}
+    {name = "reddinger2001"}
 ]
 keywords = ["flask", "architecture", "visualization", "ast", "static-analysis"]
 classifiers = [

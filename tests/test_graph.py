@@ -806,3 +806,238 @@ def test_top_risk_default_limit_50():
 def test_top_risk_empty_graph():
     """top_risk() on empty graph returns empty list."""
     assert Graph().top_risk() == []
+
+
+# ── trace_route tests ────────────────────────────────────────────────────────
+
+
+def test_trace_route_returns_execution_chain():
+    """trace_route() returns route → actions → services → models."""
+    g = Graph()
+    g.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "r.py", 1))
+    g.add_node(Node("action::list_users", NodeType.ACTION, "list_users", "a.py", 5))
+    g.add_node(Node("service::UserService", NodeType.SERVICE, "UserService", "s.py", 10))
+    g.add_node(Node("model::User", NodeType.MODEL, "User", "m.py", 15))
+    
+    g.add_edge(Edge("route::GET /users", "action::list_users", EdgeType.CALLS))
+    g.add_edge(Edge("action::list_users", "service::UserService", EdgeType.CALLS))
+    g.add_edge(Edge("service::UserService", "model::User", EdgeType.USES_MODEL))
+    
+    result = g.trace_route("route::GET /users")
+    
+    assert result["route"]["id"] == "route::GET /users"
+    assert len(result["actions"]) == 1
+    assert result["actions"][0]["id"] == "action::list_users"
+    assert len(result["services"]) == 1
+    assert result["services"][0]["id"] == "service::UserService"
+    assert len(result["models"]) == 1
+    assert result["models"][0]["id"] == "model::User"
+    assert len(result["edges"]) == 3
+
+
+def test_trace_route_invalid_node():
+    """trace_route() raises ValueError for nonexistent node."""
+    g = Graph()
+    with pytest.raises(ValueError, match="not found"):
+        g.trace_route("route::nonexistent")
+
+
+def test_trace_route_non_route_node():
+    """trace_route() raises ValueError for non-route node."""
+    g = Graph()
+    g.add_node(Node("action::test", NodeType.ACTION, "test", "a.py", 1))
+    with pytest.raises(ValueError, match="not a route"):
+        g.trace_route("action::test")
+
+
+# ── blueprint_subgraph tests ─────────────────────────────────────────────────
+
+
+def test_blueprint_subgraph_returns_blueprint_tree():
+    """blueprint_subgraph() returns blueprint → routes → actions → services → models."""
+    g = Graph()
+    g.add_node(Node("blueprint::admin", NodeType.BLUEPRINT, "admin", "admin.py", 1))
+    g.add_node(Node("route::GET /admin", NodeType.ROUTE, "GET /admin", "admin.py", 5,
+                    metadata={"blueprint": "admin"}))
+    g.add_node(Node("action::admin_index", NodeType.ACTION, "admin_index", "admin.py", 10))
+    g.add_node(Node("service::AdminService", NodeType.SERVICE, "AdminService", "admin_svc.py", 15))
+    
+    g.add_edge(Edge("route::GET /admin", "action::admin_index", EdgeType.CALLS))
+    g.add_edge(Edge("action::admin_index", "service::AdminService", EdgeType.CALLS))
+    
+    result = g.blueprint_subgraph("blueprint::admin")
+    
+    assert result["blueprint"]["id"] == "blueprint::admin"
+    assert len(result["routes"]) == 1
+    assert result["routes"][0]["id"] == "route::GET /admin"
+    assert len(result["actions"]) == 1
+    assert result["actions"][0]["id"] == "action::admin_index"
+    assert len(result["services"]) == 1
+    assert result["services"][0]["id"] == "service::AdminService"
+
+
+def test_blueprint_subgraph_invalid_node():
+    """blueprint_subgraph() raises ValueError for nonexistent node."""
+    g = Graph()
+    with pytest.raises(ValueError, match="not found"):
+        g.blueprint_subgraph("blueprint::nonexistent")
+
+
+def test_blueprint_subgraph_non_blueprint_node():
+    """blueprint_subgraph() raises ValueError for non-blueprint node."""
+    g = Graph()
+    g.add_node(Node("route::test", NodeType.ROUTE, "test", "r.py", 1))
+    with pytest.raises(ValueError, match="not a blueprint"):
+        g.blueprint_subgraph("route::test")
+
+
+# ── trace_node tests ─────────────────────────────────────────────────────────
+
+
+def test_trace_node_returns_callers_and_callees():
+    """trace_node() returns forward and backward traces."""
+    g = Graph()
+    g.add_node(Node("route::GET /", NodeType.ROUTE, "GET /", "r.py", 1))
+    g.add_node(Node("action::middle", NodeType.ACTION, "middle", "a.py", 5))
+    g.add_node(Node("service::Svc", NodeType.SERVICE, "Svc", "s.py", 10))
+    
+    g.add_edge(Edge("route::GET /", "action::middle", EdgeType.CALLS))
+    g.add_edge(Edge("action::middle", "service::Svc", EdgeType.CALLS))
+    
+    result = g.trace_node("action::middle")
+    
+    assert result["node"]["id"] == "action::middle"
+    assert len(result["callers"]) == 1
+    assert result["callers"][0]["id"] == "route::GET /"
+    assert len(result["callees"]) == 1
+    assert result["callees"][0]["id"] == "service::Svc"
+
+
+def test_trace_node_invalid_node():
+    """trace_node() raises ValueError for nonexistent node."""
+    g = Graph()
+    with pytest.raises(ValueError, match="not found"):
+        g.trace_node("action::nonexistent")
+
+
+def test_trace_node_no_connections():
+    """trace_node() returns empty lists for isolated node."""
+    g = Graph()
+    g.add_node(Node("action::isolated", NodeType.ACTION, "isolated", "a.py", 1))
+    
+    result = g.trace_node("action::isolated")
+    
+    assert result["node"]["id"] == "action::isolated"
+    assert result["callers"] == []
+    assert result["callees"] == []
+    assert result["models_used"] == []
+    assert result["tasks_dispatched"] == []
+
+
+# ── locate tests ─────────────────────────────────────────────────────────────
+
+
+def test_locate_finds_best_fit_blueprint():
+    """locate() finds best-fit blueprint for a hint."""
+    g = Graph()
+    g.add_node(Node("blueprint::users", NodeType.BLUEPRINT, "users", "users.py", 1))
+    g.add_node(Node("blueprint::admin", NodeType.BLUEPRINT, "admin", "admin.py", 1))
+    g.add_node(Node("service::UserService", NodeType.SERVICE, "UserService", "user_svc.py", 5))
+    
+    result = g.locate("user")
+    
+    assert result["hint"] == "user"
+    assert result["best_blueprint"]["id"] == "blueprint::users"
+    assert result["best_service"]["id"] == "service::UserService"
+
+
+def test_locate_no_match():
+    """locate() returns None fields when no match found."""
+    g = Graph()
+    g.add_node(Node("blueprint::admin", NodeType.BLUEPRINT, "admin", "admin.py", 1))
+    
+    result = g.locate("nonexistent")
+    
+    assert result["hint"] == "nonexistent"
+    assert result["best_blueprint"] is None
+    assert result["best_service"] is None
+
+
+# ── neighbors tests ──────────────────────────────────────────────────────────
+
+
+def test_neighbors_returns_bidirectional_subgraph():
+    """neighbors() returns nodes within depth hops."""
+    g = Graph()
+    g.add_node(Node("action::center", NodeType.ACTION, "center", "a.py", 1))
+    g.add_node(Node("service::near", NodeType.SERVICE, "near", "s.py", 5))
+    g.add_node(Node("model::far", NodeType.MODEL, "far", "m.py", 10))
+    
+    g.add_edge(Edge("action::center", "service::near", EdgeType.CALLS))
+    g.add_edge(Edge("service::near", "model::far", EdgeType.USES_MODEL))
+    
+    result = g.neighbors("action::center", depth=1)
+    
+    assert "nodes" in result
+    assert "edges" in result
+    node_ids = {n["id"] for n in result["nodes"]}
+    assert "action::center" in node_ids
+    assert "service::near" in node_ids
+    # model::far should NOT be included (depth=1)
+    assert "model::far" not in node_ids
+
+
+def test_neighbors_invalid_node():
+    """neighbors() raises ValueError for nonexistent node."""
+    g = Graph()
+    with pytest.raises(ValueError, match="not found"):
+        g.neighbors("action::nonexistent")
+
+
+def test_neighbors_depth_2():
+    """neighbors() respects depth parameter."""
+    g = Graph()
+    g.add_node(Node("action::center", NodeType.ACTION, "center", "a.py", 1))
+    g.add_node(Node("service::near", NodeType.SERVICE, "near", "s.py", 5))
+    g.add_node(Node("model::far", NodeType.MODEL, "far", "m.py", 10))
+    
+    g.add_edge(Edge("action::center", "service::near", EdgeType.CALLS))
+    g.add_edge(Edge("service::near", "model::far", EdgeType.USES_MODEL))
+    
+    result = g.neighbors("action::center", depth=2)
+    
+    node_ids = {n["id"] for n in result["nodes"]}
+    assert "action::center" in node_ids
+    assert "service::near" in node_ids
+    assert "model::far" in node_ids  # Should be included at depth=2
+
+
+# ── search predicate tests (additional coverage) ─────────────────────────────
+
+
+def test_search_blueprint_predicate():
+    """search() supports blueprint= predicate."""
+    g = Graph()
+    g.add_node(Node("route::GET /admin", NodeType.ROUTE, "GET /admin", "r.py", 1,
+                    metadata={"blueprint": "admin"}))
+    g.add_node(Node("route::GET /users", NodeType.ROUTE, "GET /users", "r.py", 5,
+                    metadata={"blueprint": "users"}))
+    
+    results = g.search("blueprint=admin")
+    
+    assert len(results) == 1
+    assert results[0].id == "route::GET /admin"
+
+
+def test_search_complexity_equals():
+    """search() supports complexity= predicate."""
+    g = Graph()
+    g.add_node(Node("action::simple", NodeType.ACTION, "simple", "a.py", 1,
+                    metadata={"complexity": 5}))
+    g.add_node(Node("action::complex", NodeType.ACTION, "complex", "a.py", 5,
+                    metadata={"complexity": 20}))
+    
+    results = g.search("complexity=5")
+    
+    assert len(results) == 1
+    assert results[0].id == "action::simple"

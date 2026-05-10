@@ -8,6 +8,13 @@ interface HeatmapViewProps {
   selectedNodeId?: string | null;
 }
 
+// Helper to shorten path — show last 2 segments only
+const shortPath = (path: string) => {
+  if (!path) return '';
+  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : path;
+};
+
 export function HeatmapView({ graph, onNodeSelect, selectedNodeId }: HeatmapViewProps) {
   const selectedCardRef = useRef<HTMLButtonElement>(null);
 
@@ -101,12 +108,12 @@ export function HeatmapView({ graph, onNodeSelect, selectedNodeId }: HeatmapView
                 }`}
               >
                 <div className="flex items-start justify-between mb-2">
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-900 dark:text-white break-words">
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-semibold text-gray-900 dark:text-white break-all">
                       {node.label}
                     </h3>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-mono">
-                      {node.file_path}
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-mono truncate" title={node.file_path}>
+                      {shortPath(node.file_path)}
                     </p>
                   </div>
                   <span

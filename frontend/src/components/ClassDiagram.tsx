@@ -25,6 +25,9 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
   const [hideIsolated, setHideIsolated] = useState(false);
   const [zoom, setZoom] = useState(1);
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isPanning = useRef(false);
+  const panStart = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
 
   // Filter model nodes
   const modelNodes = useMemo(() => {
@@ -100,7 +103,7 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
 
     // Second pass: compute cumulative Y offsets per row
     const rowYOffsets: number[] = [];
-    let cumY = 50;
+    let cumY = 20;
     rowMaxHeights.forEach((h, r) => {
       rowYOffsets[r] = cumY;
       cumY += h + verticalSpacing;
@@ -111,7 +114,7 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
       const row = Math.floor(index / cols);
       boxes.push({
         node,
-        x: col * (boxWidth + horizontalSpacing) + 50,
+        x: col * (boxWidth + horizontalSpacing) + 20,
         y: rowYOffsets[row],
         width: boxWidth,
         height: getBoxHeight(node),
@@ -389,10 +392,40 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
     img.src = url;
   };
 
+  // Mouse panning handlers
+  const onMouseDown = (e: React.MouseEvent) => {
+    // Only pan on left-click on the background (not on SVG elements)
+    if ((e.target as Element).closest('.class-box')) return;
+    isPanning.current = true;
+    panStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: containerRef.current!.scrollLeft,
+      scrollTop: containerRef.current!.scrollTop,
+    };
+    e.preventDefault();
+  };
+
+  const onMouseMove = (e: React.MouseEvent) => {
+    if (!isPanning.current || !containerRef.current) return;
+    const dx = e.clientX - panStart.current.x;
+    const dy = e.clientY - panStart.current.y;
+    containerRef.current.scrollLeft = panStart.current.scrollLeft - dx;
+    containerRef.current.scrollTop = panStart.current.scrollTop - dy;
+  };
+
+  const onMouseUp = () => {
+    isPanning.current = false;
+  };
+
+  const onMouseLeave = () => {
+    isPanning.current = false;
+  };
+
   return (
-    <div className="relative w-full h-full">
+    <div className="flex flex-col w-full h-full">
       {/* Toolbar */}
-      <div className="absolute top-3 left-3 z-10 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-3 flex flex-col gap-2">
+      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm p-3 flex flex-row gap-4 items-center flex-shrink-0">
         {/* Search */}
         <input
           type="text"
@@ -438,7 +471,14 @@ const ClassDiagram: React.FC<ClassDiagramProps> = ({ graph, onNodeSelect, select
       </div>
 
       {/* Scrollable canvas */}
-      <div className="w-full h-full overflow-auto bg-gray-50 dark:bg-gray-900">
+      <div
+        ref={containerRef}
+        className={`flex-1 overflow-auto bg-gray-50 dark:bg-gray-900 ${isPanning.current ? 'cursor-grabbing select-none' : 'cursor-grab'}`}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseLeave}
+      >
         <svg
           ref={svgRef}
           width={svgDimensions.width}

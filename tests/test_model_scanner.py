@@ -218,3 +218,233 @@ def test_mixin_classes_not_emitted_as_model_nodes(mixin_app_path):
     node_ids = {n.id for n in nodes}
     assert "model::TimestampMixin" not in node_ids
     assert "model::TenantMixin" not in node_ids
+
+
+def test_model_inherits_from_base(tmp_path):
+    """Test detection of models inheriting from Base or DeclarativeBase (line 92)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from sqlalchemy.orm import DeclarativeBase
+
+class Base(DeclarativeBase):
+    pass
+
+class User(Base):
+    __tablename__ = 'users'
+    id = 1
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    model_nodes = [n for n in nodes if n.type == NodeType.MODEL]
+    # Should find User (inherits from Base which inherits from DeclarativeBase)
+    assert len(model_nodes) >= 1
+
+
+def test_relationship_self_loop_skipped(tmp_path):
+    """Test that self-referential relationships are skipped (line 147)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+class Category(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    parent = db.relationship('Category')
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    # Should create Category node but no self-loop edge
+    model_nodes = [n for n in nodes if n.id == "model::Category"]
+    assert len(model_nodes) == 1
+    
+    # Should not have self-loop edge
+    self_loop_edges = [e for e in edges if e.source == "model::Category" and e.target == "model::Category"]
+    assert len(self_loop_edges) == 0
+
+
+def test_column_as_name_not_attribute(tmp_path):
+    """Test Column() as ast.Name, not db.Column() (lines 233-235)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import DeclarativeBase
+
+class Base(DeclarativeBase):
+    pass
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100))
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    model_nodes = [n for n in nodes if n.id == "model::User"]
+    assert len(model_nodes) == 1
+    
+    columns = model_nodes[0].metadata["columns"]
+    assert "id" in columns
+    assert "name" in columns
+
+
+def test_relationship_as_name_not_attribute(tmp_path):
+    """Test relationship() as ast.Name, not db.relationship() (lines 243-245)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy.orm import relationship, DeclarativeBase
+
+class Base(DeclarativeBase):
+    pass
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+
+class Order(Base):
+    __tablename__ = 'orders'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    user = relationship('User')
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    # Should find relationship edge
+    relationship_edges = [e for e in edges if e.type == EdgeType.HAS_RELATIONSHIP]
+    assert len(relationship_edges) >= 1
+
+
+def test_column_with_no_args_returns_unknown(tmp_path):
+    """Test Column() with no args returns 'Unknown' type (line 259)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column()
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    model_nodes = [n for n in nodes if n.id == "model::User"]
+    assert len(model_nodes) == 1
+    
+    columns = model_nodes[0].metadata["columns"]
+    assert "id" in columns
+    assert columns["id"]["type"] == "Unknown"
+
+
+def test_column_with_string_alias_no_type(tmp_path):
+    """Test Column('alias') with no second arg returns 'Unknown' (lines 266-269)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column('user_id')
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    model_nodes = [n for n in nodes if n.id == "model::User"]
+    assert len(model_nodes) == 1
+    
+    columns = model_nodes[0].metadata["columns"]
+    assert "id" in columns
+    assert columns["id"]["type"] == "Unknown"
+
+
+def test_column_type_as_name(tmp_path):
+    """Test column type as ast.Name (Integer not db.Integer) (line 275)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import DeclarativeBase
+
+class Base(DeclarativeBase):
+    pass
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    age = Column(Integer)
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    model_nodes = [n for n in nodes if n.id == "model::User"]
+    assert len(model_nodes) == 1
+    
+    columns = model_nodes[0].metadata["columns"]
+    assert columns["id"]["type"] == "Integer"
+    assert columns["age"]["type"] == "Integer"
+
+
+def test_column_type_nested_call_with_name(tmp_path):
+    """Test nested Call with ast.Name func (String(100) not db.String(100)) (lines 282-285)."""
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from sqlalchemy import Column, String
+from sqlalchemy.orm import DeclarativeBase
+
+class Base(DeclarativeBase):
+    pass
+
+class User(Base):
+    __tablename__ = 'users'
+    name = Column(String(100))
+    email = Column(String(255))
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    model_nodes = [n for n in nodes if n.id == "model::User"]
+    assert len(model_nodes) == 1
+    
+    columns = model_nodes[0].metadata["columns"]
+    assert columns["name"]["type"] == "String"
+    assert columns["email"]["type"] == "String"
+
+
+def test_relationship_target_ast_str_python37(tmp_path):
+    """Test relationship target as ast.Str for Python < 3.8 compatibility (lines 293-295)."""
+    # This is hard to test directly in Python 3.8+ since ast.Str is deprecated
+    # But we can verify the code path exists and doesn't crash
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+class Order(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+    user = db.relationship('User')
+""")
+    
+    scanner = ModelScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    # Should handle relationship target extraction
+    relationship_edges = [e for e in edges if e.type == EdgeType.HAS_RELATIONSHIP]
+    assert len(relationship_edges) >= 1

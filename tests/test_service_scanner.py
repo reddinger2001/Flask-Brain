@@ -144,3 +144,59 @@ def test_service_scanner_works_across_all_fixtures(flat_app_path, factory_app_pa
             assert node.file_path
             assert node.line_number > 0
             assert isinstance(node.metadata, dict)
+
+
+def test_service_scanner_ignores_private_functions(tmp_path):
+    """Test that private functions (starting with _) are not detected as services."""
+    # Create a test file with private functions
+    test_file = tmp_path / "test_service.py"
+    test_file.write_text("""
+def get_user():
+    pass
+
+def _private_helper():
+    pass
+
+def __dunder_method__():
+    pass
+""")
+    
+    scanner = ServiceScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    service_nodes = [n for n in nodes if n.type == NodeType.SERVICE]
+    service_labels = {n.label for n in service_nodes}
+    
+    # Should find get_user but not private functions
+    assert "get_user" in service_labels
+    assert "_private_helper" not in service_labels
+    assert "__dunder_method__" not in service_labels
+
+
+def test_service_scanner_is_service_file_method(tmp_path):
+    """Test the _is_service_file method with various file patterns."""
+    scanner = ServiceScanner(tmp_path)
+    
+    # Test service file patterns (lines 34-38)
+    assert scanner._is_service_file(Path("user_service.py"))
+    assert scanner._is_service_file(Path("order_repository.py"))
+    assert scanner._is_service_file(Path("service.py"))
+    assert scanner._is_service_file(Path("repository.py"))
+    
+    # Test services directory (lines 41-42)
+    assert scanner._is_service_file(Path("app/services/user.py"))
+    assert scanner._is_service_file(Path("services/order.py"))
+    
+    # Test domain directory with service.py (lines 46-47)
+    # This hits line 47 when name is 'service' or 'repository' AND len(parts) > 1
+    # But we need a case where the name is NOT already matched by lines 36-38
+    # Actually, 'service' and 'repository' ARE matched by line 36-38, so line 47 is redundant
+    # Let's test a file that would only match via the domain directory check
+    # Wait - line 36-38 checks if name == 'service' or name == 'repository'
+    # So users/service.py would match at line 36-38, not line 46-47
+    # Line 46-47 is actually unreachable because line 36-38 already catches these cases
+    
+    # Test non-service files (line 49)
+    assert not scanner._is_service_file(Path("models.py"))
+    assert not scanner._is_service_file(Path("routes.py"))
+    assert not scanner._is_service_file(Path("app.py"))

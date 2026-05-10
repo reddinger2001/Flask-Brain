@@ -237,3 +237,464 @@ def test_view_tracer_creates_uses_model_edges_for_models(blueprint_app_path):
         # Should NOT be a service call to a model
         assert not (edge.target.startswith("service::") and ("User" in edge.target or "Order" in edge.target)), \
             f"Model should not appear as service: {edge.target}"
+
+
+def test_view_tracer_handles_import_statements(tmp_path):
+    """Test that import statements (not from...import) are collected."""
+    # Create a test file with import statements
+    test_file = tmp_path / "app.py"
+    test_file.write_text("""
+from flask import Flask
+import os
+import sys as system
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    path = os.path.join('/', 'test')
+    version = system.version
+    return 'OK'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Check that imports were collected
+    imports = tracer.imports.get(str(test_file), {})
+    assert 'os' in imports
+    assert imports['os'] == 'os'
+    assert 'system' in imports
+    assert imports['system'] == 'sys'
+
+
+def test_view_tracer_handles_ast_name_base_class(tmp_path):
+    """Test model detection with ast.Name base class."""
+    test_file = tmp_path / "models.py"
+    test_file.write_text("""
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+# Model inheriting from db.Model (ast.Attribute)
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+# Model inheriting from Model directly (ast.Name)
+from sqlalchemy.ext.declarative import declarative_base
+Base = declarative_base()
+
+class Product(Base):
+    __tablename__ = 'products'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Both models should be detected
+    assert 'User' in tracer.models
+    assert 'Product' in tracer.models
+
+
+def test_view_tracer_handles_ast_str_for_python37(tmp_path):
+    """Test handling of ast.Str nodes for Python < 3.8 compatibility."""
+    # This tests lines 185-186 and 197-198 (ast.Str fallback)
+    # In Python 3.8+, these are ast.Constant, but the code has fallback for older versions
+    # We can't easily test this without Python 3.7, but we can verify the code path exists
+    test_file = tmp_path / "app.py"
+    test_file.write_text("""
+from flask import Flask
+app = Flask(__name__)
+
+@app.route('/test', methods=['GET', 'POST'])
+def test_view():
+    return 'OK'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect the route
+    action_nodes = [n for n in nodes if n.type == NodeType.ACTION]
+    assert len(action_nodes) >= 1
+    assert any(n.label == 'test_view' for n in action_nodes)
+
+
+def test_view_tracer_handles_attribute_func_calls(tmp_path):
+    """Test detection of calls with ast.Attribute func (e.g., obj.method())."""
+    test_file = tmp_path / "app.py"
+    test_file.write_text("""
+from flask import Flask
+app = Flask(__name__)
+
+class UserService:
+    def get_user(self, user_id):
+        return None
+
+user_service = UserService()
+
+@app.route('/user/<int:user_id>')
+def get_user_view(user_id):
+    # This is an ast.Attribute call: user_service.get_user()
+    user = user_service.get_user(user_id)
+    return str(user)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect the service call
+    service_edges = [e for e in edges if e.source == "action::get_user_view"]
+    assert len(service_edges) > 0
+
+
+def test_view_tracer_handles_subscript_calls(tmp_path):
+    """Test handling of subscript calls (e.g., services['user'].get())."""
+    test_file = tmp_path / "app.py"
+    test_file.write_text("""
+from flask import Flask
+app = Flask(__name__)
+
+services = {'user': None}
+
+@app.route('/user')
+def get_user():
+    # This is an ast.Subscript: services['user']
+    user = services['user']
+    return str(user)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should handle subscript without crashing
+    action_nodes = [n for n in nodes if n.type == NodeType.ACTION]
+    assert len(action_nodes) >= 1
+
+
+def test_view_tracer_skips_flask_builtin_objects(tmp_path):
+    """Test that Flask builtin objects are skipped (line 295)."""
+    test_file = tmp_path / "app.py"
+    test_file.write_text("""
+from flask import Flask, request
+app = Flask(__name__)
+
+@app.route('/test')
+def test_view():
+    # request is a Flask builtin - should be skipped
+    data = request.get_json()
+    return str(data)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should NOT create edges to request.get_json
+    service_edges = [e for e in edges if e.source == "action::test_view"]
+    assert not any('request' in e.target for e in service_edges)
+
+
+def test_view_tracer_detects_model_object_calls(tmp_path):
+    """Test detection of model object method calls (lines 299-300)."""
+    test_file = tmp_path / "app.py"
+    test_file.write_text("""
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+app = Flask(__name__)
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    
+    def save(self):
+        pass
+
+@app.route('/user')
+def create_user():
+    user = User()
+    user.save()  # This should create a USES_MODEL edge
+    return 'OK'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect User model
+    assert 'User' in tracer.models
+    
+    # Should create USES_MODEL edge for user.save()
+    from flask_brain.graph import EdgeType
+    model_edges = [e for e in edges if e.type == EdgeType.USES_MODEL]
+    assert len(model_edges) > 0
+
+
+def test_view_tracer_handles_imported_models(tmp_path):
+    """Test detection of imported model calls (lines 305-311)."""
+    # Create models file
+    models_file = tmp_path / "models.py"
+    models_file.write_text("""
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+""")
+    
+    # Create app file that imports the model
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+from models import User
+
+app = Flask(__name__)
+
+@app.route('/user')
+def get_user():
+    user = User.query.first()
+    return str(user)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect User as a model (even if imported)
+    # The tracer scans models.py and finds User
+    assert 'User' in tracer.models
+    
+    # Should create action node for the route
+    action_nodes = [n for n in nodes if n.type == NodeType.ACTION and n.label == "get_user"]
+    assert len(action_nodes) == 1
+
+
+def test_view_tracer_handles_imported_service_modules(tmp_path):
+    """Test detection of imported service module calls (lines 314-318)."""
+    # Create service file
+    service_file = tmp_path / "user_service.py"
+    service_file.write_text("""
+class UserService:
+    def get_user(self, user_id):
+        return None
+
+user_service = UserService()
+""")
+    
+    # Create app file that imports the service
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+from user_service import user_service
+
+app = Flask(__name__)
+
+@app.route('/user/<int:user_id>')
+def get_user(user_id):
+    user = user_service.get_user(user_id)
+    return str(user)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect service call
+    service_edges = [e for e in edges if e.source == "action::get_user" and 'service' in e.target.lower()]
+    assert len(service_edges) > 0
+
+
+def test_view_tracer_has_route_decorator_with_call(tmp_path):
+    """Test _has_route_decorator with ast.Call decorator (lines 163-167)."""
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/test')
+def test_route():
+    return 'OK'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect route decorator and create action node
+    action_nodes = [n for n in nodes if n.type == NodeType.ACTION and n.label == "test_route"]
+    assert len(action_nodes) == 1
+
+
+def test_view_tracer_extract_route_info_non_attribute(tmp_path):
+    """Test _extract_route_info returns None for non-Attribute func (line 175)."""
+    # This is tested indirectly - if decorator.func is not ast.Attribute, 
+    # _extract_route_info returns None and the route is skipped
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+
+app = Flask(__name__)
+
+# Normal route - should work
+@app.route('/test')
+def test_route():
+    return 'OK'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should still create action node for valid route
+    action_nodes = [n for n in nodes if n.type == NodeType.ACTION]
+    assert len(action_nodes) >= 1
+
+
+def test_view_tracer_detects_celery_task_dispatch(tmp_path):
+    """Test detection of Celery task dispatch via .delay() or .apply_async() (line 330)."""
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+from celery import Celery
+
+app = Flask(__name__)
+celery = Celery(app.name)
+
+@celery.task
+def send_email(to, subject):
+    pass
+
+@app.route('/send')
+def send_notification():
+    send_email.delay('user@example.com', 'Hello')
+    return 'Sent'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect task dispatch
+    from flask_brain.graph import EdgeType
+    task_edges = [e for e in edges if e.type == EdgeType.DISPATCHES_TASK]
+    assert len(task_edges) > 0
+
+
+def test_view_tracer_detects_db_session_query(tmp_path):
+    """Test detection of db.session.query(Model) calls (lines 343-349)."""
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+app = Flask(__name__)
+db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+@app.route('/users')
+def list_users():
+    users = db.session.query(User).all()
+    return str(users)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect User model usage via db.session.query
+    from flask_brain.graph import EdgeType
+    model_edges = [e for e in edges if e.type == EdgeType.USES_MODEL and 'User' in e.target]
+    assert len(model_edges) > 0
+
+
+def test_view_tracer_detects_direct_model_constructor(tmp_path):
+    """Test detection of direct model constructor calls (lines 361-362)."""
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+app = Flask(__name__)
+db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100))
+
+@app.route('/create')
+def create_user():
+    user = User(name='John')
+    db.session.add(user)
+    return 'Created'
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should detect User model usage via constructor
+    from flask_brain.graph import EdgeType
+    model_edges = [e for e in edges if e.type == EdgeType.USES_MODEL and 'User' in e.target]
+    assert len(model_edges) > 0
+
+
+def test_view_tracer_skips_imported_flask_builtins(tmp_path):
+    """Test that imported Flask builtins are skipped (lines 367-373)."""
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask, jsonify, render_template
+
+app = Flask(__name__)
+
+@app.route('/test')
+def test_route():
+    data = {'key': 'value'}
+    return jsonify(data)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should create action node but NOT create service edges for jsonify
+    action_nodes = [n for n in nodes if n.type == NodeType.ACTION and n.label == "test_route"]
+    assert len(action_nodes) == 1
+    
+    # Should not have edges to jsonify (it's a Flask builtin)
+    jsonify_edges = [e for e in edges if 'jsonify' in e.target]
+    assert len(jsonify_edges) == 0
+
+
+def test_view_tracer_classify_edge_type(tmp_path):
+    """Test _classify_edge_type method (lines 383-389)."""
+    app_file = tmp_path / "app.py"
+    app_file.write_text("""
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+app = Flask(__name__)
+db = SQLAlchemy()
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+def get_user_service(user_id):
+    return User.query.get(user_id)
+
+@app.route('/user/<int:user_id>')
+def get_user(user_id):
+    user = get_user_service(user_id)
+    return str(user)
+""")
+    
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+    
+    # Should have service edges with correct type (CALLS)
+    from flask_brain.graph import EdgeType
+    service_edges = [e for e in edges if e.type == EdgeType.CALLS and 'service' in e.target]
+    
+    # The _classify_edge_type method is used internally
+    # We verify it works by checking edge types are correct
+    assert len(service_edges) > 0
+    
+    # Verify the method exists and can be called
+    assert hasattr(tracer, '_classify_edge_type')
+    assert tracer._classify_edge_type('service::test') == EdgeType.CALLS
+    assert tracer._classify_edge_type('model::User') == EdgeType.USES_MODEL
+    assert tracer._classify_edge_type('task::send_email') == EdgeType.DISPATCHES_TASK

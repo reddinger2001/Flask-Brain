@@ -71,11 +71,44 @@ def test_celery_scanner_detects_task_with_call_decorator(blueprint_app_path):
     assert "process_order_task" in task_labels
 
 
-def test_celery_scanner_handles_shared_task_decorator():
-    """Test detection of @shared_task decorator."""
-    # This is a documentation test - we don't have a fixture with @shared_task yet
-    # But the scanner should support this pattern
-    pass
+def test_celery_scanner_handles_shared_task_decorator(tmp_path):
+    """Test detection of @shared_task decorator (lines 56-57)."""
+    # Create a file with @shared_task decorator
+    tasks_file = tmp_path / "tasks.py"
+    tasks_file.write_text("""
+from celery import shared_task
+
+@shared_task
+def send_notification(user_id):
+    return True
+""")
+    
+    scanner = CeleryTaskScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    task_nodes = [n for n in nodes if n.type == NodeType.TASK]
+    assert len(task_nodes) == 1
+    assert task_nodes[0].label == "send_notification"
+
+
+def test_celery_scanner_handles_shared_task_with_call(tmp_path):
+    """Test detection of @shared_task() with parentheses (lines 63-65)."""
+    # Create a file with @shared_task() decorator
+    tasks_file = tmp_path / "tasks.py"
+    tasks_file.write_text("""
+from celery import shared_task
+
+@shared_task(name='custom_task')
+def process_data(data_id):
+    return True
+""")
+    
+    scanner = CeleryTaskScanner(tmp_path)
+    nodes, edges = scanner.scan()
+    
+    task_nodes = [n for n in nodes if n.type == NodeType.TASK]
+    assert len(task_nodes) == 1
+    assert task_nodes[0].label == "process_data"
 
 
 def test_celery_scanner_handles_app_task_decorator():

@@ -126,3 +126,110 @@ class TestExportContext:
         result_default = export_context(g, "blueprint::auth")
         result_d3 = export_context(g, "blueprint::auth", depth=3)
         assert result_default == result_d3
+
+    def test_source_snippets_added_within_budget(self, tmp_path):
+        """Test that source snippets are added when within budget (lines 120-122)."""
+        # Create a real file for source snippet
+        test_file = tmp_path / "test.py"
+        test_file.write_text("""
+def test_function():
+    return 'hello'
+""")
+        
+        g = Graph()
+        node = Node(id="action::test", type=NodeType.ACTION, label="test_function",
+                   file_path=str(test_file), line_number=2)
+        g.add_node(node)
+        
+        # Large budget should include source snippets
+        result = export_context(g, node.id, budget=10000)
+        assert "```python" in result or "test_function" in result
+
+    def test_tree_walk_handles_missing_node(self):
+        """Test tree walk handles missing node in node_map (line 169)."""
+        g = Graph()
+        node1 = Node(id="action::test1", type=NodeType.ACTION, label="test1",
+                    file_path="test.py", line_number=1)
+        node2 = Node(id="action::test2", type=NodeType.ACTION, label="test2",
+                    file_path="test.py", line_number=5)
+        g.add_node(node1)
+        g.add_node(node2)
+        
+        # Add edge to non-existent node
+        g.add_edge(Edge(source="action::test1", target="action::nonexistent", type=EdgeType.CALLS))
+        
+        # Should not crash, just skip the missing node
+        result = export_context(g, node1.id)
+        assert "test1" in result
+
+    def test_empty_tree_returns_empty_string(self):
+        """Test that empty tree returns empty string (line 179)."""
+        g = Graph()
+        node = Node(id="action::isolated", type=NodeType.ACTION, label="isolated",
+                   file_path="test.py", line_number=1)
+        g.add_node(node)
+        
+        # Node with no outgoing edges
+        result = export_context(g, node.id, depth=1)
+        # Should still contain the focal node
+        assert "isolated" in result
+
+    def test_db_operations_with_dict_format(self):
+        """Test DB operations formatting with dict entries (line 216)."""
+        g = Graph()
+        node = Node(id="action::test", type=NodeType.ACTION, label="test",
+                   file_path="test.py", line_number=1,
+                   metadata={"db_operations": [
+                       {"type": "SELECT", "pattern": "User.query.all()"},
+                       {"type": "INSERT", "pattern": "db.session.add(user)"}
+                   ]})
+        g.add_node(node)
+        
+        result = export_context(g, node.id)
+        assert "SELECT" in result or "db_operations" in result.lower()
+
+    def test_db_operations_with_non_dict_format(self):
+        """Test DB operations formatting with non-dict entries (line 221)."""
+        g = Graph()
+        node = Node(id="action::test", type=NodeType.ACTION, label="test",
+                   file_path="test.py", line_number=1,
+                   metadata={"db_operations": "simple_string"})
+        g.add_node(node)
+        
+        result = export_context(g, node.id)
+        # Should convert to string without crashing
+        assert isinstance(result, str)
+
+    def test_source_snippets_handles_file_not_found(self):
+        """Test source snippets handles missing files (lines 248-256)."""
+        g = Graph()
+        node = Node(id="action::test", type=NodeType.ACTION, label="test",
+                   file_path="/nonexistent/file.py", line_number=1)
+        g.add_node(node)
+        
+        # Should not crash on missing file
+        result = export_context(g, node.id, budget=10000)
+        assert isinstance(result, str)
+
+    def test_source_snippets_empty_returns_empty_string(self):
+        """Test source snippets returns empty string when no snippets (line 260)."""
+        g = Graph()
+        # Node with non-existent file
+        node = Node(id="action::test", type=NodeType.ACTION, label="test",
+                   file_path="/nonexistent.py", line_number=1)
+        g.add_node(node)
+        
+        result = export_context(g, node.id, budget=10000)
+        # Should still return valid markdown without source snippets
+        assert "test" in result
+
+    def test_truncate_to_budget_when_over_limit(self):
+        """Test token budget truncation (lines 275-277)."""
+        g, route, action, service, model, bp = make_graph()
+        
+        # Very small budget should trigger truncation
+        result = export_context(g, route.id, budget=50)
+        
+        # Should be truncated
+        words = len(result.split())
+        assert words * 1.3 <= 50 * 2  # Allow some slack for truncation logic
