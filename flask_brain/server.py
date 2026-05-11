@@ -171,6 +171,7 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
                     target_id=target_id,
                     conftest_path=params.get("conftest_path"),
                     output_path=params.get("output_path"),
+                    project_root=self.project_path,
                 )
             except ValueError as e:
                 msg = str(e)

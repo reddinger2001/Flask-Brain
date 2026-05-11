@@ -10,7 +10,9 @@ agents or users write to disk themselves.
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,6 +27,7 @@ def generate_tests(
     target_id: str,
     conftest_path: str | None = None,
     output_path: str | None = None,
+    project_root: "Path | str | None" = None,
 ) -> dict:
     """Generate pytest test scaffolding for a target node.
     
@@ -38,6 +41,12 @@ def generate_tests(
         Optional path to existing conftest.py (for fixture discovery).
     output_path:
         Optional desired output file path (returned in response).
+    project_root:
+        Absolute path to the project root.  When provided, the generator reads
+        service source files to infer model names from import statements — filling
+        the gap when graph edges are incomplete.  Falls back to
+        ``graph.project_path`` if set, then skips source inference if neither
+        is available.
     
     Returns
     -------
@@ -59,7 +68,13 @@ def generate_tests(
     node = graph.get_node(target_id)
     if not node:
         raise ValueError(f"Node '{target_id}' not found")
-    
+
+    # Resolve project root for source-based model inference
+    if project_root is not None:
+        project_root = Path(project_root)
+    else:
+        project_root = getattr(graph, "project_path", None)
+
     target_type = node.type.value
     
     # Resolve scope based on target type
@@ -88,7 +103,7 @@ def generate_tests(
     
     # Generate tiers
     routes_code = _generate_routes_tier(routes, graph)
-    services_code = _generate_services_tier(services, models, graph)
+    services_code = _generate_services_tier(services, models, graph, project_root)
     
     # Collect warnings
     warnings = []
@@ -360,21 +375,78 @@ def _generate_route_class(route: "Node", graph: "Graph", seen_class_names: set) 
 # Services tier generator
 # ---------------------------------------------------------------------------
 
-def _generate_services_tier(services: list["Node"], models: list["Node"], graph: "Graph") -> str:
+def _infer_models_from_source(service: "Node", project_root: Path) -> list[tuple[str, str]]:
+    """Extract model names and their import paths from a service's source file.
+
+    Reads the service file via AST and returns every name that looks like a
+    SQLAlchemy model — identified by being imported from a module path containing
+    ``models`` and being a CamelCase class name.  Falls back to an empty list
+    if the file cannot be read or parsed.
+
+    Returns
+    -------
+    list of (class_name, dotted_import_path) tuples, e.g.
+        [("Invoice", "app.billing.models.invoice"),
+         ("LineItem", "app.billing.models.line_item")]
+    """
+    if not service.file_path or not project_root:
+        return []
+
+    source_path = project_root / service.file_path
+    if not source_path.exists():
+        return []
+
+    try:
+        tree = ast.parse(source_path.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        return []
+
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        # Only consider imports from model modules
+        if "model" not in module.lower():
+            continue
+        for alias in node.names:
+            # Use the local alias if present, otherwise the original name
+            local_name = alias.asname if alias.asname else alias.name
+            # Only include CamelCase names (likely class names, not functions/constants)
+            if local_name and local_name[0].isupper() and local_name not in seen:
+                seen.add(local_name)
+                results.append((local_name, module))
+
+    return results
+
+
+def _generate_services_tier(services: list["Node"], models: list["Node"], graph: "Graph", project_root: "Path | None" = None) -> str:
     """Generate scaffolded service tests with real factory inference."""
     if not services:
         return ""
-    
+
     classes = []
     for service in services:
-        classes.append(_generate_service_class(service, models, graph))
+        classes.append(_generate_service_class(service, models, graph, project_root))
     
     return "\n\n".join(classes)
 
 
-def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph") -> str:
+def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph", project_root: "Path | None" = None) -> str:
     """Generate a test class for a single service."""
     class_name = f"Test{_to_pascal_case(service.label.split('.')[-1])}"
+
+    # Infer model names from source imports — graph edges may be incomplete for
+    # services that import models cross-file.  Source is the ground truth.
+    inferred_models = _infer_models_from_source(service, project_root) if project_root else []
+    # Merge with graph-resolved models (graph models take precedence as they are confirmed)
+    graph_model_names = {m.label for m in models}
+    all_model_names = list(graph_model_names)
+    for name, module in inferred_models:
+        if name not in graph_model_names:
+            all_model_names.append(name)
 
     lines = [
         f'class {class_name}:',
@@ -387,7 +459,7 @@ def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph
     complexity = service.metadata.get("complexity", 0)
     db_ops = service.metadata.get("db_operations", [])
     has_write_ops = any(
-        op.get("type") in ["INSERT", "UPDATE", "DELETE"]
+        op.get("type") in ["INSERT", "UPDATE", "DELETE", "WRITE"]
         if isinstance(op, dict) else "add" in str(op).lower() or "commit" in str(op).lower()
         for op in (db_ops if isinstance(db_ops, list) else [])
     )
@@ -410,8 +482,12 @@ def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph
         f'        with app.app_context():',
         f'            # TODO: build required fixtures',
     ])
-    if models:
-        lines.append(f'            # Models used: {", ".join(m.label for m in models)}')
+    if all_model_names:
+        lines.append(f'            # Models used: {", ".join(sorted(all_model_names))}')
+    if inferred_models:
+        # Emit concrete import hints so the dev can copy-paste
+        for name, module in inferred_models:
+            lines.append(f'            # from {module} import {name}')
     lines.extend([
         f'            # TODO: instantiate service and call method',
         f'            result = None  # TODO: call service method',
@@ -431,6 +507,8 @@ def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph
 
     # DB persistence test if write ops detected
     if has_write_ops:
+        # Use first write-touching model as the example in the assertion hint
+        example_model = all_model_names[0] if all_model_names else "MyModel"
         lines.extend([
             f'    def test_persists_to_db(self, app, db):',
             f'        """Write operation must persist to the database."""',
@@ -438,7 +516,7 @@ def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph
             f'            # TODO: call service method that writes to DB',
             f'            db.session.commit()',
             f'        # TODO: assert DB state changed',
-            f'        # Example: assert MyModel.query.count() == 1',
+            f'        # Example: assert {example_model}.query.count() == 1',
             '',
         ])
 

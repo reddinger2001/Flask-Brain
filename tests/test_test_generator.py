@@ -733,3 +733,113 @@ class TestScannerToGeneratorIntegration:
         open_result = generate_tests(g, routes["GET /open"].id)
         assert "status_code == 200" in open_result["combined"]
         assert "test_unauthenticated_returns_302" not in open_result["combined"]
+
+
+# ---------------------------------------------------------------------------
+# Source-based model inference
+# ---------------------------------------------------------------------------
+
+class TestInferModelsFromSource:
+    """_infer_models_from_source reads a service file and extracts model names
+    from import statements — filling the gap when graph edges are incomplete."""
+
+    def _make_service_node(self, tmp_path, source: str) -> "Node":
+        """Write source to a service file and return a Node pointing at it."""
+        svc_file = tmp_path / "services" / "my_service.py"
+        svc_file.parent.mkdir(parents=True, exist_ok=True)
+        svc_file.write_text(source)
+        from flask_brain.graph import Node, NodeType
+        return Node(
+            id="service::MyService",
+            type=NodeType.SERVICE,
+            label="MyService",
+            file_path="services/my_service.py",
+            line_number=1,
+        )
+
+    def test_extracts_model_names_from_model_imports(self, tmp_path):
+        """CamelCase names imported from a models module are returned."""
+        from flask_brain.test_generator import _infer_models_from_source
+        node = self._make_service_node(tmp_path, (
+            "from app.models.evidence_file import EvidenceFile\n"
+            "from app.models.compliance_record import ComplianceRecord\n"
+            "from app.utils.helpers import some_helper\n"  # should be ignored
+            "\ndef upload(): pass\n"
+        ))
+        result = _infer_models_from_source(node, tmp_path)
+        names = [r[0] for r in result]
+        assert "EvidenceFile" in names
+        assert "ComplianceRecord" in names
+        assert "some_helper" not in names  # not from a models module
+
+    def test_ignores_non_model_imports(self, tmp_path):
+        """Names imported from non-models modules are not included."""
+        from flask_brain.test_generator import _infer_models_from_source
+        node = self._make_service_node(tmp_path, (
+            "from flask import current_app\n"
+            "from app.services.audit import audit_service\n"
+            "from app.models.user import User\n"
+        ))
+        result = _infer_models_from_source(node, tmp_path)
+        names = [r[0] for r in result]
+        assert names == ["User"]
+
+    def test_handles_aliased_imports(self, tmp_path):
+        """Import aliases (as X) are recorded under the alias name."""
+        from flask_brain.test_generator import _infer_models_from_source
+        node = self._make_service_node(tmp_path, (
+            "from app.models.evidence_file import EvidenceFile as EF\n"
+        ))
+        result = _infer_models_from_source(node, tmp_path)
+        names = [r[0] for r in result]
+        assert "EF" in names
+        assert "EvidenceFile" not in names
+
+    def test_returns_empty_for_missing_file(self, tmp_path):
+        """Returns empty list gracefully when file_path doesn't exist."""
+        from flask_brain.test_generator import _infer_models_from_source
+        from flask_brain.graph import Node, NodeType
+        node = Node(
+            id="service::Ghost",
+            type=NodeType.SERVICE,
+            label="Ghost",
+            file_path="services/does_not_exist.py",
+            line_number=1,
+        )
+        result = _infer_models_from_source(node, tmp_path)
+        assert result == []
+
+    def test_generate_service_class_includes_inferred_models(self, tmp_path):
+        """generate_tests emits model names and import hints in the scaffold."""
+        from flask_brain.graph import Graph, Node, NodeType
+        from flask_brain.test_generator import generate_tests
+
+        svc_file = tmp_path / "services" / "evidence_service.py"
+        svc_file.parent.mkdir(parents=True, exist_ok=True)
+        svc_file.write_text(
+            "from app.models.evidence_file import EvidenceFile\n"
+            "from app.models.compliance_record import ComplianceRecord\n"
+            "\nclass EvidenceService:\n"
+            "    def upload(self): pass\n"
+        )
+
+        g = Graph()
+        svc = Node(
+            id="service::EvidenceService",
+            type=NodeType.SERVICE,
+            label="EvidenceService",
+            file_path="services/evidence_service.py",
+            line_number=4,
+            metadata={"methods": ["upload"], "db_operations": [{"type": "WRITE", "pattern": "db.session.add()"}]},
+        )
+        g.add_node(svc)
+
+        result = generate_tests(g, "service::EvidenceService", project_root=tmp_path)
+        combined = result["combined"]
+
+        assert "EvidenceFile" in combined, "EvidenceFile should appear in scaffold"
+        assert "ComplianceRecord" in combined, "ComplianceRecord should appear in scaffold"
+        assert "from app.models.evidence_file import EvidenceFile" in combined
+        assert "from app.models.compliance_record import ComplianceRecord" in combined
+        # DB example hint should use the real model name, not 'MyModel'
+        assert "EvidenceFile.query.count()" in combined or "ComplianceRecord.query.count()" in combined
