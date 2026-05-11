@@ -30,9 +30,10 @@ def test_view_tracer_creates_action_nodes_for_view_functions(flat_app_path):
     tracer = ViewFunctionTracer(flat_app_path)
     nodes, edges = tracer.scan()
     
-    # Should create action nodes for all three view functions
+    # Should create action nodes for all three view functions (may include extra
+    # action nodes for non-view service functions that reference models)
     action_nodes = [n for n in nodes if n.type == NodeType.ACTION]
-    assert len(action_nodes) == 3
+    assert len(action_nodes) >= 3
     
     action_labels = {n.label for n in action_nodes}
     assert "list_users" in action_labels
@@ -114,9 +115,10 @@ def test_view_tracer_creates_edges_from_routes_to_actions(flat_app_path):
     tracer = ViewFunctionTracer(flat_app_path)
     nodes, edges = tracer.scan()
     
-    # Each view function should have an action node
+    # Each view function should have an action node (may include extra nodes
+    # for non-view service functions that reference models)
     action_nodes = [n for n in nodes if n.type == NodeType.ACTION]
-    assert len(action_nodes) == 3
+    assert len(action_nodes) >= 3
     
     # Verify action node IDs follow convention
     action_ids = {n.id for n in action_nodes}
@@ -698,3 +700,87 @@ def get_user(user_id):
     assert tracer._classify_edge_type('service::test') == EdgeType.CALLS
     assert tracer._classify_edge_type('model::User') == EdgeType.USES_MODEL
     assert tracer._classify_edge_type('task::send_email') == EdgeType.DISPATCHES_TASK
+
+
+def test_view_tracer_resolves_uses_model_edges_for_cross_file_imports(tmp_path):
+    """USES_MODEL edges must be emitted when a model is imported from another file.
+
+    Regression test: ViewFunctionTracer previously only recognised model names
+    defined in the *same* file.  Service files that import a model class from a
+    models module would produce no uses_model edges even though the service
+    clearly queries or constructs that model.
+    """
+    # models/record.py — defines the SQLAlchemy model
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").write_text("")
+    (models_dir / "record.py").write_text(
+        "from flask_sqlalchemy import SQLAlchemy\n"
+        "db = SQLAlchemy()\n"
+        "class EvidenceFile(db.Model):\n"
+        "    id = db.Column(db.Integer, primary_key=True)\n"
+    )
+
+    # services/evidence_service.py — imports the model and uses it
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / "__init__.py").write_text("")
+    (services_dir / "evidence_service.py").write_text(
+        "from models.record import EvidenceFile\n"
+        "\n"
+        "def upload(data):\n"
+        "    record = EvidenceFile()\n"
+        "    return record\n"
+        "\n"
+        "def list_all():\n"
+        "    return EvidenceFile.query.all()\n"
+    )
+
+    # app.py — view function that calls the service
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask\n"
+        "from services.evidence_service import upload, list_all\n"
+        "\n"
+        "app = Flask(__name__)\n"
+        "\n"
+        "@app.route('/evidence', methods=['POST'])\n"
+        "def create_evidence():\n"
+        "    return upload({})\n"
+        "\n"
+        "@app.route('/evidence')\n"
+        "def get_evidence():\n"
+        "    return list_all()\n"
+    )
+    (tmp_path / "__init__.py").write_text("")
+
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+
+    # EvidenceFile must be recognised as a model
+    assert "EvidenceFile" in tracer.models, (
+        "EvidenceFile should be in tracer.models after scanning models/record.py"
+    )
+
+    # _get_local_models must include EvidenceFile for the service file
+    service_file = tmp_path / "services" / "evidence_service.py"
+    local = tracer._get_local_models(service_file)
+    assert "EvidenceFile" in local, (
+        "_get_local_models should include imported model name EvidenceFile"
+    )
+
+    # At least one USES_MODEL edge pointing at model::EvidenceFile must exist
+    uses_model_edges = [
+        e for e in edges
+        if e.type == EdgeType.USES_MODEL and e.target == "model::EvidenceFile"
+    ]
+    assert uses_model_edges, (
+        "Expected at least one USES_MODEL edge to model::EvidenceFile; "
+        f"got edges: {[e for e in edges if 'EvidenceFile' in e.target]}"
+    )
+
+    # An action node must have been created for the service function
+    action_ids = {n.id for n in nodes}
+    assert "action::upload" in action_ids or "action::list_all" in action_ids, (
+        "Expected action node for service function using EvidenceFile; "
+        f"got action nodes: {[n.id for n in nodes if n.id.startswith('action::')]}"
+    )

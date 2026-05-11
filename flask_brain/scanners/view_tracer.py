@@ -59,7 +59,17 @@ class ViewFunctionTracer(BaseScanner):
                 file_nodes, file_edges = self._trace_view_calls(tree, py_file)
                 nodes.extend(file_nodes)
                 edges.extend(file_edges)
-        
+
+        # Fifth pass: trace model usage inside service/helper functions so that
+        # action::fn → model::M edges are emitted even when the function is not
+        # itself a view function (e.g. a service method called from a view).
+        for py_file in self._get_python_files():
+            tree = self._parse_file(py_file)
+            if tree:
+                file_nodes, file_edges = self._trace_service_model_calls(tree, py_file)
+                nodes.extend(file_nodes)
+                edges.extend(file_edges)
+
         return nodes, edges
     
     def _collect_imports(self, tree: ast.Module, file_path: Path) -> None:
@@ -96,6 +106,24 @@ class ViewFunctionTracer(BaseScanner):
                     if base_name in ('Model', 'Base', 'DeclarativeBase'):
                         self.models.add(node.name)
                         break
+
+    def _get_local_models(self, file_path: Path) -> set[str]:
+        """Return the set of model names visible in a given file.
+
+        Includes both globally identified model classes and any names imported
+        into this file whose resolved class name is a known model.  This allows
+        service files that import ``EvidenceFile`` from a models module to have
+        that name recognised as a model during call tracing.
+        """
+        local = set(self.models)
+        file_imports = self.imports.get(str(file_path), {})
+        for local_name, dotted_path in file_imports.items():
+            # dotted_path is "some.module.ClassName" — the last segment is the
+            # class name as it was defined in the source file.
+            class_name = dotted_path.split(".")[-1]
+            if class_name in self.models:
+                local.add(local_name)
+        return local
     
     def _identify_blueprint_declarations(self, tree: ast.Module, file_path: Path) -> None:
         """Identify Blueprint() declarations."""
@@ -244,7 +272,66 @@ class ViewFunctionTracer(BaseScanner):
                                 edges.append(edge)
         
         return nodes, edges
-    
+
+    def _trace_service_model_calls(self, tree: ast.Module, file_path: Path) -> list[Edge]:
+        """Emit action→model USES_MODEL edges for non-view functions that use models.
+
+        The main ``_trace_view_calls`` pass only walks functions that are
+        registered as Flask route handlers.  Service and helper functions that
+        directly query or construct models are therefore invisible to model-edge
+        detection.  This pass fills that gap: for every function whose name is
+        *not* a view function we walk its body and emit a USES_MODEL edge
+        whenever a model is referenced.  This means service methods that import
+        and use ``EvidenceFile`` will produce ``action::upload → model::EvidenceFile``
+        edges in the graph.
+
+        An ``action`` node is created for the service function so that
+        ``Graph.add_edge`` (which silently drops dangling edges) does not discard
+        the edges.
+        """
+        nodes = []
+        edges = []
+        local_models = self._get_local_models(file_path)
+        if not local_models:
+            return nodes, edges
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # Skip view functions — already handled by _trace_view_calls
+            if node.name in self.view_functions:
+                continue
+
+            seen_targets: set[str] = set()
+            model_edges = []
+            for call_node in ast.walk(node):
+                if not isinstance(call_node, ast.Call):
+                    continue
+                targets = self._identify_call_targets(call_node, file_path)
+                for target, edge_type in targets:
+                    if edge_type == EdgeType.USES_MODEL and target not in seen_targets:
+                        seen_targets.add(target)
+                        model_edges.append(Edge(
+                            source=f"action::{node.name}",
+                            target=target,
+                            type=EdgeType.USES_MODEL,
+                        ))
+
+            if model_edges:
+                # Create the action node so add_edge doesn't drop the edges
+                action_node = Node(
+                    id=f"action::{node.name}",
+                    type=NodeType.ACTION,
+                    label=node.name,
+                    file_path=self._get_relative_path(file_path),
+                    line_number=node.lineno,
+                    metadata={},
+                )
+                nodes.append(action_node)
+                edges.extend(model_edges)
+
+        return nodes, edges
+
     def _create_route_to_action_edges(self, func_name: str, view_info: dict[str, Any], file_path: Path) -> list[Edge]:
         """Create edges from route nodes to action nodes."""
         edges = []
@@ -277,7 +364,8 @@ class ViewFunctionTracer(BaseScanner):
     def _identify_call_targets(self, call_node: ast.Call, file_path: Path) -> list[tuple[str, EdgeType]]:
         """Identify the targets of a function call."""
         targets = []
-        
+        local_models = self._get_local_models(file_path)
+
         # Method call: obj.method()
         if isinstance(call_node.func, ast.Attribute):
             attr_name = call_node.func.attr
@@ -295,7 +383,7 @@ class ViewFunctionTracer(BaseScanner):
                     return targets
                 
                 # Check if obj_name is a known model - create USES_MODEL edge
-                if obj_name in self.models:
+                if obj_name in local_models:
                     targets.append((f"model::{obj_name}", EdgeType.USES_MODEL))
                     return targets
                 
@@ -306,7 +394,7 @@ class ViewFunctionTracer(BaseScanner):
                     
                     # Check if imported module is a model
                     imported_name = imported_module.split('.')[-1]
-                    if imported_name in self.models:
+                    if imported_name in local_models:
                         targets.append((f"model::{imported_name}", EdgeType.USES_MODEL))
                         return targets
                     
@@ -345,7 +433,7 @@ class ViewFunctionTracer(BaseScanner):
                             # Try to extract model from arguments
                             if call_node.args and isinstance(call_node.args[0], ast.Name):
                                 model_name = call_node.args[0].id
-                                if model_name in self.models:
+                                if model_name in local_models:
                                     targets.append((f"model::{model_name}", EdgeType.USES_MODEL))
         
         # Direct function call
@@ -357,7 +445,7 @@ class ViewFunctionTracer(BaseScanner):
                 return targets
             
             # Check if it's a model constructor call
-            if func_name in self.models:
+            if func_name in local_models:
                 targets.append((f"model::{func_name}", EdgeType.USES_MODEL))
                 return targets
             
