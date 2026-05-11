@@ -107,10 +107,20 @@ def generate_tests(
     
     # Collect warnings
     warnings = []
+    has_calls_edges = any(
+        e.type.value == "calls" for e in graph.edges
+        if graph.get_node(e.source) and graph.get_node(e.source).type.value == "route"
+    )
     dead_weight = {n.id for n in graph.dead_weight()}
     for s in services:
         if s.id in dead_weight:
-            warnings.append(f"{s.label} has no callers (dead-weight) — pragma: no cover candidate")
+            if has_calls_edges:
+                warnings.append(f"{s.label} has no callers (dead-weight) — pragma: no cover candidate")
+            else:
+                warnings.append(
+                    f"{s.label}: route→service call tracing is incomplete in this graph — "
+                    f"re-run `flask-brain scan` and verify CALLS edges exist before treating as dead-weight"
+                )
         complexity = s.metadata.get("complexity", 0)
         if complexity > 20:
             warnings.append(f"{s.label} has high complexity ({complexity}) — prioritise branch coverage")
@@ -136,8 +146,15 @@ def generate_tests(
         services=services,
     )
     
-    # Stats
-    test_count = len(routes) * 2 + len(services) * 3  # rough estimate
+    # Stats — count actual generated test methods
+    route_test_count = sum(
+        2 + (1 if r.metadata.get("auth_required") else 0)
+        for r in routes
+    )
+    service_test_count = sum(
+        _count_service_tests(s) for s in services
+    )
+    test_count = route_test_count + service_test_count
     
     # Default output path
     if not output_path:
@@ -422,6 +439,19 @@ def _infer_models_from_source(service: "Node", project_root: Path) -> list[tuple
     return results
 
 
+def _count_service_tests(service: "Node") -> int:
+    """Return the number of test methods that will be generated for a service node."""
+    methods = [m for m in service.metadata.get("methods", []) if not m.startswith("_")]
+    db_ops = service.metadata.get("db_operations", [])
+    has_write = any(
+        op.get("type") in ["INSERT", "UPDATE", "DELETE", "WRITE"]
+        if isinstance(op, dict) else "add" in str(op).lower() or "commit" in str(op).lower()
+        for op in (db_ops if isinstance(db_ops, list) else [])
+    )
+    # 1 test per public method + 1 not-found + 1 persists_to_db if write ops present
+    return max(len(methods), 1) + 1 + (1 if has_write else 0)
+
+
 def _generate_services_tier(services: list["Node"], models: list["Node"], graph: "Graph", project_root: "Path | None" = None) -> str:
     """Generate scaffolded service tests with real factory inference."""
     if not services:
@@ -435,7 +465,7 @@ def _generate_services_tier(services: list["Node"], models: list["Node"], graph:
 
 
 def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph", project_root: "Path | None" = None) -> str:
-    """Generate a test class for a single service."""
+    """Generate a test class for a single service — one stub per public method."""
     class_name = f"Test{_to_pascal_case(service.label.split('.')[-1])}"
 
     # Infer model names from source imports — graph edges may be incomplete for
@@ -448,14 +478,6 @@ def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph
         if name not in graph_model_names:
             all_model_names.append(name)
 
-    lines = [
-        f'class {class_name}:',
-        f'    """Tests for {service.id}',
-        f'',
-        f'    Coverage targets:',
-    ]
-
-    # Add coverage target hints
     complexity = service.metadata.get("complexity", 0)
     db_ops = service.metadata.get("db_operations", [])
     has_write_ops = any(
@@ -463,39 +485,68 @@ def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph
         if isinstance(op, dict) else "add" in str(op).lower() or "commit" in str(op).lower()
         for op in (db_ops if isinstance(db_ops, list) else [])
     )
+    example_model = all_model_names[0] if all_model_names else "MyModel"
 
-    lines.append(f'      - happy path → returns expected result')
-    lines.append(f'      - not found → raises exception  # TODO: verify exception type')
+    # Public methods — skip dunder and private
+    public_methods = [m for m in service.metadata.get("methods", []) if not m.startswith("_")]
+
+    # Build import hint block (reused in several test stubs)
+    import_hints = []
+    if all_model_names:
+        import_hints.append(f'            # Models used: {", ".join(sorted(all_model_names))}')
+    for name, module in inferred_models:
+        import_hints.append(f'            # from {module} import {name}')
+
+    lines = [
+        f'class {class_name}:',
+        f'    """Tests for {service.id}',
+        f'',
+        f'    Coverage targets:',
+    ]
+    if public_methods:
+        for m in public_methods:
+            lines.append(f'      - {m}() → happy path + edge cases')
+    else:
+        lines.append(f'      - happy path → returns expected result')
+    lines.append(f'      - not found / invalid input → raises exception')
     if has_write_ops:
         lines.append(f'      - write operation → persists to DB')
     if complexity > 5:
         lines.append(f'      # TODO: add branch coverage tests (complexity={complexity})')
-    lines.extend([
-        f'    """',
-        '',
-    ])
+    lines.extend([f'    """', ''])
 
-    # Happy path test
-    lines.extend([
-        f'    def test_happy_path(self, app, db):',
-        f'        """Service returns expected result for valid inputs."""',
-        f'        with app.app_context():',
-        f'            # TODO: build required fixtures',
-    ])
-    if all_model_names:
-        lines.append(f'            # Models used: {", ".join(sorted(all_model_names))}')
-    if inferred_models:
-        # Emit concrete import hints so the dev can copy-paste
-        for name, module in inferred_models:
-            lines.append(f'            # from {module} import {name}')
-    lines.extend([
-        f'            # TODO: instantiate service and call method',
-        f'            result = None  # TODO: call service method',
-        f'        assert result is not None',
-        '',
-    ])
+    # --- one test stub per public method ---
+    if public_methods:
+        for method in public_methods:
+            test_name = f'test_{method}'
+            lines.extend([
+                f'    def {test_name}(self, app, db):',
+                f'        """Happy path for {service.label}.{method}()."""',
+                f'        with app.app_context():',
+                f'            # TODO: build required fixtures',
+            ])
+            lines.extend(import_hints)
+            lines.extend([
+                f'            result = None  # TODO: result = {service.label}.{method}(...)',
+                f'        assert result is not None',
+                '',
+            ])
+    else:
+        # No method metadata — emit a single generic stub
+        lines.extend([
+            f'    def test_happy_path(self, app, db):',
+            f'        """Service returns expected result for valid inputs."""',
+            f'        with app.app_context():',
+            f'            # TODO: build required fixtures',
+        ])
+        lines.extend(import_hints)
+        lines.extend([
+            f'            result = None  # TODO: call service method',
+            f'        assert result is not None',
+            '',
+        ])
 
-    # Not-found test — use 999999 so the intent is unambiguous
+    # --- not-found / invalid input test ---
     lines.extend([
         f'    def test_not_found_raises(self, app):',
         f'        """Service raises an exception for a nonexistent ID."""',
@@ -505,10 +556,8 @@ def _generate_service_class(service: "Node", models: list["Node"], graph: "Graph
         '',
     ])
 
-    # DB persistence test if write ops detected
+    # --- DB persistence test (only when write ops detected) ---
     if has_write_ops:
-        # Use first write-touching model as the example in the assertion hint
-        example_model = all_model_names[0] if all_model_names else "MyModel"
         lines.extend([
             f'    def test_persists_to_db(self, app, db):',
             f'        """Write operation must persist to the database."""',
