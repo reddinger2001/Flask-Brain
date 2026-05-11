@@ -1,5 +1,9 @@
 """CLI entry point for Flask Brain."""
 
+import os
+import signal
+import subprocess
+import sys
 import typer
 import json
 from pathlib import Path
@@ -23,6 +27,7 @@ def scan(
     watch: bool = typer.Option(False, "--watch", "-w", help="Watch for file changes and re-scan"),
     port: int = typer.Option(7891, "--port", "-p", help="Port for HTTP server"),
     no_serve: bool = typer.Option(False, "--no-serve", help="Don't start HTTP server after scan"),
+    background: bool = typer.Option(False, "--background", "-b", help="Run server in background (daemon mode)"),
 ):
     """Scan a Flask project and generate architecture graph."""
     console.print(f"[bold green]Scanning Flask project:[/bold green] {path}")
@@ -54,7 +59,10 @@ def scan(
         console.print(f"\n[bold blue]Starting HTTP server on port {port}...[/bold blue]")
         if watch:
             console.print("[dim]Watch mode: auto-rescan on .py changes[/dim]")
-        start_server(output_dir, port=port, open_browser=True, watch=watch)
+        if background:
+            _start_background(output_dir, port, project_path=path, watch=watch)
+        else:
+            start_server(output_dir, port=port, open_browser=True, watch=watch)
     elif watch:
         console.print("[yellow]--watch requires server (remove --no-serve)[/yellow]")
 
@@ -64,6 +72,7 @@ def serve(
     path: Path = typer.Argument(..., help="Path to Flask project (with .flask-brain/ directory)"),
     port: int = typer.Option(7891, "--port", "-p", help="Port for HTTP server"),
     watch: bool = typer.Option(False, "--watch", "-w", help="Watch for file changes and auto-rescan"),
+    background: bool = typer.Option(False, "--background", "-b", help="Run server in background (daemon mode)"),
 ):
     """Start HTTP server to view previously scanned project."""
     console.print(f"[bold green]Starting server for:[/bold green] {path}")
@@ -77,7 +86,11 @@ def serve(
     
     if watch:
         console.print("[dim]Watch mode: auto-rescan on .py changes[/dim]")
-    start_server(graph_dir, port=port, open_browser=True, project_path=path, watch=watch)
+
+    if background:
+        _start_background(graph_dir, port, project_path=path, watch=watch)
+    else:
+        start_server(graph_dir, port=port, open_browser=True, project_path=path, watch=watch)
 
 
 @app.command()
@@ -278,6 +291,104 @@ def diff_cmd(
         for ec in sorted(diff.edge_changes, key=lambda x: x.change_type):
             icon = {"added": "[green][+][/green]", "removed": "[red][-][/red]"}[ec.change_type]
             console.print(f"  {icon} {ec.source} → {ec.target}  [dim]({ec.edge_type})[/dim]")
+
+
+def _pid_file(graph_dir: Path) -> Path:
+    return graph_dir / "server.pid"
+
+
+def _read_pid(graph_dir: Path) -> int | None:
+    pf = _pid_file(graph_dir)
+    if not pf.exists():
+        return None
+    try:
+        pid = int(pf.read_text().strip())
+        # Confirm process is still alive
+        os.kill(pid, 0)
+        return pid
+    except (ValueError, ProcessLookupError, PermissionError):
+        pf.unlink(missing_ok=True)
+        return None
+
+
+def _start_background(graph_dir: Path, port: int, project_path: Path = None, watch: bool = False):
+    """Fork the server into the background and write a PID file."""
+    existing_pid = _read_pid(graph_dir)
+    if existing_pid:
+        console.print(f"[yellow]Server already running (PID {existing_pid}) on port {port}[/yellow]")
+        console.print(f"[dim]Run 'flask-brain stop <path>' to stop it first.[/dim]")
+        return
+
+    cmd = [
+        sys.executable, "-m", "flask_brain._daemon",
+        str(graph_dir),
+        "--port", str(port),
+    ]
+    if project_path:
+        cmd += ["--project-path", str(project_path)]
+    if watch:
+        cmd += ["--watch"]
+
+    log_file = graph_dir / "server.log"
+    with open(log_file, "w") as log:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log,
+            stderr=log,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,  # detach from parent's process group
+        )
+
+    _pid_file(graph_dir).write_text(str(proc.pid))
+    console.print(f"[bold green]✓[/bold green] Server started in background (PID {proc.pid})")
+    console.print(f"  URL:  http://localhost:{port}")
+    console.print(f"  Log:  {log_file}")
+    console.print(f"  Stop: flask-brain stop {project_path or graph_dir.parent}")
+
+
+@app.command()
+def stop(
+    path: Path = typer.Argument(..., help="Path to Flask project (with .flask-brain/ directory)"),
+):
+    """Stop a background Flask Brain server."""
+    graph_dir = path / ".flask-brain"
+    pid = _read_pid(graph_dir)
+    if pid is None:
+        console.print("[yellow]No running server found for this project.[/yellow]")
+        raise typer.Exit(0)
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+        _pid_file(graph_dir).unlink(missing_ok=True)
+        console.print(f"[bold green]✓[/bold green] Server stopped (PID {pid})")
+    except ProcessLookupError:
+        _pid_file(graph_dir).unlink(missing_ok=True)
+        console.print(f"[yellow]Process {pid} was already gone — PID file cleaned up.[/yellow]")
+
+
+@app.command()
+def status(
+    path: Path = typer.Argument(..., help="Path to Flask project (with .flask-brain/ directory)"),
+    port: int = typer.Option(7891, "--port", "-p", help="Port to check"),
+):
+    """Show whether the Flask Brain server is running."""
+    import urllib.request
+    import urllib.error
+
+    graph_dir = path / ".flask-brain"
+    pid = _read_pid(graph_dir)
+
+    if pid:
+        console.print(f"[bold green]●[/bold green] Server is running (PID {pid})")
+    else:
+        console.print("[bold red]○[/bold red] No server process found")
+
+    # Also probe the port regardless of PID file
+    try:
+        urllib.request.urlopen(f"http://localhost:{port}/api/manifest", timeout=2)
+        console.print(f"[bold green]✓[/bold green] Port {port} is responding")
+    except urllib.error.URLError:
+        console.print(f"[bold red]✗[/bold red] Port {port} is not responding")
 
 
 if __name__ == "__main__":
