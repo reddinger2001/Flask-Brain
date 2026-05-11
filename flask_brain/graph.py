@@ -825,8 +825,8 @@ class GraphBuilder:
         scanners = [
             RouteScanner(project_path),
             ModelScanner(project_path),
-            ViewFunctionTracer(project_path),
             ServiceScanner(project_path),
+            ViewFunctionTracer(project_path),
             CeleryTaskScanner(project_path),
             PropertyScanner(project_path),
         ]

@@ -1041,3 +1041,65 @@ def test_search_complexity_equals():
     
     assert len(results) == 1
     assert results[0].id == "action::simple"
+
+
+def test_graph_builder_emits_service_uses_model_edges_for_staticmethod_classes(tmp_path):
+    """GraphBuilder must emit service→model edges even when service methods are @staticmethod.
+
+    Regression test: ViewFunctionTracer ran before ServiceScanner in the scanner
+    list. add_edge() silently drops edges whose source node doesn't exist yet, so
+    every service::ClassName → model::M edge was discarded because the service
+    node hadn't been created yet when the view tracer emitted the edge.
+
+    Fix: ServiceScanner now runs before ViewFunctionTracer in GraphBuilder.build().
+    This test exercises the full build pipeline to catch any future reordering.
+    """
+    from flask_brain.graph import GraphBuilder, EdgeType
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("")
+    (tmp_path / "app" / "models").mkdir()
+    (tmp_path / "app" / "models" / "__init__.py").write_text("")
+    (tmp_path / "app" / "models" / "invoice.py").write_text(
+        "from flask_sqlalchemy import SQLAlchemy\n"
+        "db = SQLAlchemy()\n"
+        "class Invoice(db.Model):\n"
+        "    id = db.Column(db.Integer, primary_key=True)\n"
+    )
+    (tmp_path / "app" / "services").mkdir()
+    (tmp_path / "app" / "services" / "__init__.py").write_text("")
+    (tmp_path / "app" / "services" / "billing_service.py").write_text(
+        "from app.models.invoice import Invoice\n"
+        "\n"
+        "class BillingService:\n"
+        "    @staticmethod\n"
+        "    def create_invoice(data):\n"
+        "        return Invoice(**data)\n"
+        "\n"
+        "    @staticmethod\n"
+        "    def list_invoices():\n"
+        "        return Invoice.query.all()\n"
+    )
+    (tmp_path / "__init__.py").write_text("")
+
+    graph = GraphBuilder().build(tmp_path)
+
+    # service node must exist (created by ServiceScanner)
+    svc_node = graph.get_node("service::BillingService")
+    assert svc_node is not None, "ServiceScanner must create service::BillingService node"
+
+    # model node must exist (created by ModelScanner)
+    model_node = graph.get_node("model::Invoice")
+    assert model_node is not None, "ModelScanner must create model::Invoice node"
+
+    # the uses_model edge must survive — proves scanner ordering is correct
+    uses_model_edges = [
+        e for e in graph.edges
+        if e.source == "service::BillingService"
+        and e.target == "model::Invoice"
+        and e.type == EdgeType.USES_MODEL
+    ]
+    assert uses_model_edges, (
+        "service::BillingService → model::Invoice USES_MODEL edge was dropped. "
+        "ServiceScanner must run before ViewFunctionTracer in GraphBuilder.build()."
+    )
