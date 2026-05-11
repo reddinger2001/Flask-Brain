@@ -135,3 +135,175 @@ def test_route_scanner_handles_multiple_methods(flat_app_path):
     
     assert "GET" in methods
     assert "POST" in methods
+
+
+# ---------------------------------------------------------------------------
+# Decorator detection tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def auth_app_path():
+    """Path to auth_app fixture — routes with various auth decorator patterns."""
+    return Path(__file__).parent / "fixtures" / "auth_app"
+
+
+def test_route_scanner_detects_login_required(auth_app_path):
+    """@login_required must set auth_required=True on the route node."""
+    scanner = RouteScanner(auth_app_path)
+    nodes, _ = scanner.scan()
+    dashboard = next(n for n in nodes if n.type == NodeType.ROUTE and n.label == "GET /dashboard")
+    assert dashboard.metadata["auth_required"] is True
+    assert "login_required" in dashboard.metadata["decorators"]
+
+
+def test_route_scanner_detects_admin_required(auth_app_path):
+    """@admin_required must set auth_required=True on the route node."""
+    scanner = RouteScanner(auth_app_path)
+    nodes, _ = scanner.scan()
+    admin = next(n for n in nodes if n.type == NodeType.ROUTE and n.label == "GET /admin")
+    assert admin.metadata["auth_required"] is True
+    assert "admin_required" in admin.metadata["decorators"]
+
+
+def test_route_scanner_detects_roles_required(auth_app_path):
+    """@roles_required(...) must set auth_required=True on the route node."""
+    scanner = RouteScanner(auth_app_path)
+    nodes, _ = scanner.scan()
+    reports = next(n for n in nodes if n.type == NodeType.ROUTE and n.label == "GET /reports")
+    assert reports.metadata["auth_required"] is True
+    assert "roles_required" in reports.metadata["decorators"]
+
+
+def test_route_scanner_public_route_has_auth_false(auth_app_path):
+    """Route with no auth decorator must have auth_required=False."""
+    scanner = RouteScanner(auth_app_path)
+    nodes, _ = scanner.scan()
+    public = next(n for n in nodes if n.type == NodeType.ROUTE and n.label == "GET /public")
+    assert public.metadata["auth_required"] is False
+    assert public.metadata["decorators"] == []
+
+
+def test_route_scanner_stores_all_decorators_regardless_of_auth(auth_app_path):
+    """decorators list must contain every non-route decorator, known or unknown."""
+    scanner = RouteScanner(auth_app_path)
+    nodes, _ = scanner.scan()
+    # All protected routes should have their decorator stored
+    protected = [n for n in nodes if n.type == NodeType.ROUTE and n.metadata.get("auth_required")]
+    for route in protected:
+        assert len(route.metadata["decorators"]) > 0, \
+            f"Route {route.label} has auth_required=True but empty decorators list"
+
+
+def test_route_scanner_unknown_decorator_stored_but_not_flagged():
+    """An unrecognised decorator must appear in decorators[] but not set auth_required."""
+    import tempfile, textwrap
+    src = textwrap.dedent("""\
+        from flask import Flask, jsonify
+        app = Flask(__name__)
+
+        def track_usage(f):
+            return f
+
+        @app.route('/metrics')
+        @track_usage
+        def metrics():
+            return jsonify({})
+    """)
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "app.py").write_text(src)
+        scanner = RouteScanner(Path(tmp))
+        nodes, _ = scanner.scan()
+        route = next(n for n in nodes if n.type == NodeType.ROUTE)
+    assert route.metadata["auth_required"] is False
+    assert "track_usage" in route.metadata["decorators"]
+
+
+# ---------------------------------------------------------------------------
+# async def view functions
+# ---------------------------------------------------------------------------
+
+def test_route_scanner_detects_async_routes():
+    """async def view functions must be scanned the same as sync def."""
+    import tempfile, textwrap
+    src = textwrap.dedent("""\
+        from flask import Blueprint
+        bp = Blueprint("tmpl", __name__)
+
+        def login_required(f): return f
+
+        @bp.route("/templates")
+        @login_required
+        async def list_templates():
+            pass
+
+        @bp.route("/templates/new")
+        @login_required
+        async def new_template():
+            pass
+    """)
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "views.py").write_text(src)
+        scanner = RouteScanner(Path(tmp))
+        nodes, _ = scanner.scan()
+        routes = [n for n in nodes if n.type == NodeType.ROUTE]
+        assert len(routes) == 2, f"Expected 2 routes, got {len(routes)}: {[r.label for r in routes]}"
+        for r in routes:
+            assert r.metadata["auth_required"] is True, f"{r.label} should be auth_required"
+            assert "login_required" in r.metadata["decorators"]
+
+
+def test_route_scanner_async_no_auth_route():
+    """async def route without auth decorator must have auth_required=False."""
+    import tempfile, textwrap
+    src = textwrap.dedent("""\
+        from flask import Flask, jsonify
+        app = Flask(__name__)
+
+        @app.route("/health")
+        async def health():
+            return jsonify({"ok": True})
+    """)
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "app.py").write_text(src)
+        scanner = RouteScanner(Path(tmp))
+        nodes, _ = scanner.scan()
+        routes = [n for n in nodes if n.type == NodeType.ROUTE]
+        assert len(routes) == 1
+        assert routes[0].metadata["auth_required"] is False
+        assert routes[0].metadata["decorators"] == []
+
+
+def test_route_scanner_mixed_sync_async_same_file():
+    """Mix of sync and async view functions in one file must all be detected."""
+    import tempfile, textwrap
+    src = textwrap.dedent("""\
+        from flask import Blueprint
+        bp = Blueprint("api", __name__)
+
+        def login_required(f): return f
+
+        @bp.route("/sync")
+        @login_required
+        def sync_view():
+            pass
+
+        @bp.route("/async")
+        @login_required
+        async def async_view():
+            pass
+
+        @bp.route("/open")
+        async def open_async():
+            pass
+    """)
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "views.py").write_text(src)
+        scanner = RouteScanner(Path(tmp))
+        nodes, _ = scanner.scan()
+        routes = {n.label: n for n in nodes if n.type == NodeType.ROUTE}
+        assert "GET /sync" in routes
+        assert "GET /async" in routes
+        assert "GET /open" in routes
+        assert routes["GET /sync"].metadata["auth_required"] is True
+        assert routes["GET /async"].metadata["auth_required"] is True
+        assert routes["GET /open"].metadata["auth_required"] is False

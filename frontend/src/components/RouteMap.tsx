@@ -95,11 +95,37 @@ export function RouteMap({ graph, onRouteSelect, selectedNodeId }: RouteMapProps
                       </div>
                       <div className="flex-1">
                         <p className="font-mono text-sm text-gray-900 dark:text-white">{route.label}</p>
-                        {route.metadata.view_function && (
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            → {route.metadata.view_function}
-                          </p>
-                        )}
+                        <div className="flex items-center gap-2 mt-1">
+                          {route.metadata.view_function && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              → {route.metadata.view_function}
+                            </p>
+                          )}
+                          {route.metadata.auth_required && (
+                            <span
+                              className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 font-medium"
+                              title={
+                                route.metadata.decorators && route.metadata.decorators.length > 0
+                                  ? route.metadata.decorators.map(d => `@${d}`).join(', ')
+                                  : 'auth required'
+                              }
+                            >
+                              <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                              </svg>
+                              auth
+                            </span>
+                          )}
+                          {!route.metadata.auth_required && route.metadata.decorators && route.metadata.decorators.length > 0 && (
+                            <span
+                              className="inline-flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500 font-mono"
+                              title={route.metadata.decorators.map(d => `@${d}`).join(', ')}
+                            >
+                              @{route.metadata.decorators[0]}
+                              {route.metadata.decorators.length > 1 && ` +${route.metadata.decorators.length - 1}`}
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <svg className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

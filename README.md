@@ -16,8 +16,11 @@ Tested against real-world projects with 3,400+ nodes and 4,000+ edges.
 |---|---|
 | **AST-only scanning** | Analyzes Python code without executing it — safe for any codebase |
 | **8 specialized scanners** | Routes, models, services, tasks, properties, complexity, query tracing, call chains |
+| **`async def` support** | All scanners handle both `def` and `async def` route/view functions correctly |
 | **Interactive browser UI** | Served locally at `http://localhost:7891` via a pre-built React SPA |
 | **Multiple diagram types** | Graph, Route Map, ERD, Complexity Heatmap, Dead Weight, Blind Spots, Search, Risk, Properties, Diff |
+| **Auth-aware route display** | Route Map and Sidebar show auth badges and decorator chips per route |
+| **Test generator API** | `POST /api/generate/tests` scaffolds a pytest suite from the live graph — auth-aware, zero file writes |
 | **Git churn + risk scoring** | Enriches nodes with commit frequency and composite risk scores |
 | **Watch mode** | Auto-rescans on `.py` file changes and pushes live updates via SSE |
 | **AI context export** | Generates structured Markdown context for any node — ready for LLMs |
@@ -218,6 +221,119 @@ flask-brain diff ~/projects/my-app --baseline 20250501-143022 --output json
 
 ---
 
+## Test Generator API
+
+Flask Brain can scaffold a pytest test suite directly from the live graph via a REST API. It never writes files itself — pipe the output where you need it.
+
+### `POST /api/generate/tests`
+
+Generates pytest tests for a blueprint, route, or any node in the graph.
+
+**Request body:**
+
+```json
+{
+  "target": "<node_id>",
+  "debug": false
+}
+```
+
+- **`target`** *(required)* — Node ID to generate tests for. Typically a blueprint (`blueprint::my_bp`) or a specific route (`route::GET /api/users`). Use `GET /api/search?q=<keyword>` to discover valid node IDs.
+- **`debug`** *(optional, default `false`)* — When `true`, returns raw route metadata from the graph instead of generated code. Useful for diagnosing stale scans or unexpected auth values.
+
+**Response (normal mode):**
+
+```json
+{
+  "target_id": "blueprint::my_bp",
+  "target_label": "my_bp",
+  "target_type": "blueprint",
+  "output_path": "tests/test_my_bp_routes.py",
+  "tiers": {
+    "routes": "...generated route test code...",
+    "services": "...generated service scaffold..."
+  },
+  "combined": "...full file ready to write...",
+  "stats": {
+    "route_classes": 12,
+    "auth_routes": 9,
+    "open_routes": 3
+  },
+  "warnings": []
+}
+```
+
+**Response (debug mode):**
+
+```json
+{
+  "debug": true,
+  "target_id": "blueprint::my_bp",
+  "routes": [
+    {
+      "id": "route::GET /my-bp/items/",
+      "label": "GET /my-bp/items/",
+      "metadata": {
+        "auth_required": true,
+        "decorators": ["login_required"],
+        "methods": ["GET"],
+        "view_function": "list_items"
+      }
+    }
+  ]
+}
+```
+
+**Error response (node not found):**
+
+```json
+{
+  "error": "Node 'blueprint::typo' not found in graph",
+  "suggestions": ["blueprint::my_bp", "blueprint::other_bp"]
+}
+```
+
+**Examples:**
+
+```bash
+# Generate tests for an entire blueprint and write to file
+curl -s -X POST http://localhost:7891/api/generate/tests \
+  -H "Content-Type: application/json" \
+  -d '{"target": "blueprint::my_bp"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['combined'])" \
+  > tests/test_my_bp_routes.py
+
+# Inspect raw route metadata before generating
+curl -s -X POST http://localhost:7891/api/generate/tests \
+  -H "Content-Type: application/json" \
+  -d '{"target": "blueprint::my_bp", "debug": true}' | python3 -m json.tool
+
+# Find the right node ID first
+curl -s "http://localhost:7891/api/search?q=my_bp" | python3 -c \
+  "import sys,json; [print(n['id'], n['type']) for n in json.load(sys.stdin)['nodes']]"
+```
+
+### What gets generated
+
+**Route tests** (fully functional):
+- One test class per route
+- `test_unauthenticated_returns_302` for every `auth_required` route — verifies the login redirect without a session
+- `test_authenticated_returns_200` stub (marked `skip`) pre-wired with the correct URL and HTTP method
+- Class docstring includes the URL, HTTP methods, and auth status
+
+**Service tests** (scaffolded with TODOs):
+- One test class per service method called by the blueprint
+- Placeholder arrange/act/assert structure
+
+**Auth detection** uses decorator name hints. Recognized decorators:
+`login_required`, `auth_required`, `require_login`, `require_auth`, `admin_required`, `roles_required`, `permission_required`, `fresh_login_required`, `jwt_required`, `token_required`
+
+Unknown decorators are stored verbatim in `decorators[]` and shown in the UI but do not trigger auth stubs — annotate them with a recognized name or add them to `_AUTH_DECORATOR_HINTS` in `route_scanner.py`.
+
+**Stale metadata warning:** If a route node was scanned before the auth-detection feature was added, it may lack `auth_required` and `decorators` keys. The generator emits a `# WARNING: graph metadata is stale` comment in the class docstring and adds an entry to `warnings[]` in the response. Re-run `flask-brain scan` to refresh.
+
+---
+
 ## Browser UI Tabs
 
 Once the server is running at `http://localhost:7891`:
@@ -225,7 +341,7 @@ Once the server is running at `http://localhost:7891`:
 | Tab | What it shows |
 |---|---|
 | **Graph** | Full interactive node graph. Click blueprints to expand routes. Click nodes for details and sequence diagrams. |
-| **Route Map** | Blueprint → route hierarchy. Expandable tree with HTTP method badges. |
+| **Route Map** | Blueprint → route hierarchy. Expandable tree with HTTP method badges, auth badges, and decorator chips per route. |
 | **ERD** | Entity-Relationship Diagram for all SQLAlchemy models. Shows columns, types, and relationships. |
 | **Heatmap** | Complexity heatmap — color-coded by cyclomatic complexity and line count. |
 | **Dead Weight** | Nodes with no incoming edges — likely unused code. |
@@ -246,6 +362,9 @@ Flask Brain uses 8 specialized scanners:
 - Blueprint declarations and `register_blueprint()` calls
 - URL prefixes and HTTP methods
 - View function names
+- Auth decorator detection (`login_required`, `auth_required`, and 8 other common patterns)
+- Unknown decorators stored verbatim in `decorators[]`
+- Full `async def` support
 
 ### ModelScanner
 - SQLAlchemy Model classes (Flask-SQLAlchemy 2.x and SQLAlchemy 2.x)
@@ -256,6 +375,7 @@ Flask Brain uses 8 specialized scanners:
 ### ViewFunctionTracer
 - Call chains from view functions
 - Service method calls, model queries, task dispatches
+- Full `async def` support
 
 ### ServiceScanner
 - Service classes (`*Service`, `*Repository`, `*Manager`)
@@ -354,6 +474,10 @@ Three fixture Flask apps in `tests/fixtures/`:
 
 303 tests, 3 skipped — covering all scanners, graph analysis methods, server endpoints, snapshot management, and diff engine.
 
+### Test Suite
+
+357 tests, 3 skipped — covering all scanners, graph analysis methods, server endpoints, snapshot management, diff engine, and the test generator.
+
 ---
 
 ## Architecture
@@ -378,6 +502,7 @@ flask-brain scan /path/to/project
             └─ start_server() → http://localhost:7891
                 ├─ React SPA (pre-built dist)
                 ├─ SSE endpoint (/api/events)
+                ├─ Test generator (/api/generate/tests)
                 └─ ProjectWatcher (--watch mode)
 ```
 
@@ -390,8 +515,9 @@ flask-brain/
 ├── flask_brain/
 │   ├── cli.py                      # Typer CLI (scan, serve, export-context, snapshot, snapshots, diff)
 │   ├── graph.py                    # Node, Edge, Graph, GraphBuilder
-│   ├── server.py                   # Flask HTTP server + SSE
+│   ├── server.py                   # Flask HTTP server + SSE + test generator endpoint
 │   ├── context_export.py           # AI context generator (BFS-bounded)
+│   ├── test_generator.py           # Pytest test scaffolder (POST /api/generate/tests)
 │   ├── diff.py                     # SnapshotManager, DiffEngine, GraphDiff
 │   ├── watcher.py                  # ProjectWatcher (debounced file watcher)
     │   └── scanners/
@@ -421,6 +547,7 @@ flask-brain/
     │   ├── test_property_scanner.py
     │   ├── test_server.py
     │   ├── test_diff.py
+    │   ├── test_test_generator.py
     │   └── ...
 ├── pyproject.toml
 └── README.md

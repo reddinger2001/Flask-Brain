@@ -78,12 +78,22 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/scan":
                 self.handle_rescan()
+            elif path == "/api/generate/tests":
+                self.handle_generate_tests()
             else:
                 self.send_error(404, "API endpoint not found")
         except BrokenPipeError:
             pass
         except ConnectionResetError:
             pass
+
+    def do_OPTIONS(self):
+        """Handle OPTIONS requests for CORS preflight."""
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def handle_rescan(self):
         """Trigger a rescan of the project."""
@@ -102,6 +112,80 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps(manifest).encode())
+        except Exception as e:
+            self._send_json_error(500, str(e))
+
+    def handle_generate_tests(self):
+        """Generate pytest scaffolding for a target node."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            params = json.loads(body) if body else {}
+
+            target_id = params.get("target")
+            if not target_id:
+                self._send_json_error(400, "Missing 'target' parameter")
+                return
+
+            graph_path = self.graph_dir / "graph-all.json"
+            if not graph_path.exists():
+                self._send_json_error(404, "Graph not found — run flask-brain scan first")
+                return
+
+            with open(graph_path) as f:
+                graph_data = json.load(f)
+
+            graph = Graph.from_dict(graph_data)
+
+            # debug=true: return raw node metadata for every route in scope so callers
+            # can confirm what the generator actually reads before code is emitted.
+            if params.get("debug"):
+                from flask_brain.graph import NodeType
+                target_node = graph.get_node(target_id)
+                if not target_node:
+                    self._send_json_error(404, f"Node '{target_id}' not found in graph")
+                    return
+                target_type = target_node.type.value
+                if target_type == "blueprint":
+                    scope = graph.blueprint_subgraph(target_id)
+                    route_nodes = [graph.get_node(r["id"]) for r in scope["routes"]]
+                elif target_type == "route":
+                    route_nodes = [target_node]
+                else:
+                    route_nodes = []
+                debug_info = [
+                    {
+                        "id": n.id,
+                        "label": n.label,
+                        "metadata": n.metadata,
+                    }
+                    for n in route_nodes if n
+                ]
+                self._send_json({"debug": True, "target_id": target_id, "routes": debug_info})
+                return
+
+            from flask_brain.test_generator import generate_tests
+            try:
+                result = generate_tests(
+                    graph=graph,
+                    target_id=target_id,
+                    conftest_path=params.get("conftest_path"),
+                    output_path=params.get("output_path"),
+                )
+            except ValueError as e:
+                msg = str(e)
+                # If node not found, suggest similar IDs to help the caller
+                if "not found" in msg:
+                    keyword = target_id.split("::")[-1].lower()
+                    suggestions = [
+                        n.id for n in graph.nodes.values()
+                        if keyword in n.id.lower() and n.type.value in ("blueprint", "service", "route")
+                    ][:10]
+                    self._send_json_error(404, msg, {"suggestions": suggestions})
+                else:
+                    self._send_json_error(400, msg)
+                return
+            self._send_json(result)
         except Exception as e:
             self._send_json_error(500, str(e))
 
@@ -618,9 +702,12 @@ class FlaskBrainHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_json_error(self, code: int, message: str):
+    def _send_json_error(self, code: int, message: str, extra: dict | None = None):
         """Send a JSON error response."""
-        body = json.dumps({"error": message}).encode()
+        payload = {"error": message}
+        if extra:
+            payload.update(extra)
+        body = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")

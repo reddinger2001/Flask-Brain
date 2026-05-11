@@ -144,7 +144,7 @@ class ViewFunctionTracer(BaseScanner):
     def _identify_view_functions(self, tree: ast.Module, file_path: Path) -> None:
         """Identify view functions by their route decorators."""
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # Check if function has route decorator
                 for decorator in node.decorator_list:
                     route_info = self._extract_route_info(decorator)
@@ -208,7 +208,7 @@ class ViewFunctionTracer(BaseScanner):
         edges = []
         
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name in self.view_functions:
                     view_info = self.view_functions[node.name]
                     

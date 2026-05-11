@@ -162,6 +162,43 @@ export function Sidebar({ node, onClose, onNavigate, onShowInGraph }: SidebarPro
             </div>
           )}
 
+          {/* Auth badge + full decorator list */}
+          {node.type === 'route' && (
+            <div className="space-y-2">
+              {node.metadata.auth_required ? (
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 text-xs font-semibold">
+                  <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                  </svg>
+                  Auth required
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 text-xs font-semibold">
+                  <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M10 2a5 5 0 00-5 5v2a2 2 0 00-2 2v5a2 2 0 002 2h10a2 2 0 002-2v-5a2 2 0 00-2-2H7V7a3 3 0 015.905-.75 1 1 0 001.937-.5A5.002 5.002 0 0010 2z" />
+                  </svg>
+                  Public route
+                </div>
+              )}
+              {/* Always show every decorator so custom ones aren't hidden */}
+              {node.metadata.decorators && node.metadata.decorators.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Decorators</h4>
+                  <div className="flex flex-wrap gap-1">
+                    {node.metadata.decorators.map((dec, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs font-mono"
+                      >
+                        @{dec}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {node.type === 'route' && node.metadata.view_function && (
             <div>
               <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">View Function</h4>

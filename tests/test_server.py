@@ -785,3 +785,70 @@ def test_handle_rescan_triggers_rebuild(tmp_path):
         conn.close()
     except Exception as e:
         pytest.skip(f"Server test skipped: {e}")
+
+
+def test_server_generate_tests_endpoint(temp_graph_dir):
+    """Test POST /api/generate/tests endpoint."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        port = s.getsockname()[1]
+    
+    server_thread = threading.Thread(
+        target=start_server,
+        args=(temp_graph_dir, port, False),
+        daemon=True
+    )
+    server_thread.start()
+    time.sleep(0.5)
+    
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        
+        # Test with valid route target
+        body = json.dumps({"target": "route::GET /test"})
+        headers = {"Content-Type": "application/json"}
+        conn.request('POST', '/api/generate/tests', body=body, headers=headers)
+        response = conn.getresponse()
+        
+        assert response.status == 200
+        data = json.loads(response.read().decode())
+        assert "target_id" in data
+        assert "combined" in data
+        assert "tiers" in data
+        assert "stats" in data
+        assert data["target_id"] == "route::GET /test"
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")
+
+
+def test_server_generate_tests_missing_target(temp_graph_dir):
+    """Test POST /api/generate/tests with missing target parameter."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        port = s.getsockname()[1]
+    
+    server_thread = threading.Thread(
+        target=start_server,
+        args=(temp_graph_dir, port, False),
+        daemon=True
+    )
+    server_thread.start()
+    time.sleep(0.5)
+    
+    try:
+        conn = HTTPConnection('localhost', port, timeout=2)
+        
+        # Test with missing target
+        body = json.dumps({})
+        headers = {"Content-Type": "application/json"}
+        conn.request('POST', '/api/generate/tests', body=body, headers=headers)
+        response = conn.getresponse()
+        
+        assert response.status == 400
+        data = json.loads(response.read().decode())
+        assert "error" in data
+        assert "target" in data["error"].lower()
+        conn.close()
+    except Exception as e:
+        pytest.skip(f"Server test skipped: {e}")

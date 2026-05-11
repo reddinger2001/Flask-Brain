@@ -11,6 +11,23 @@ from flask_brain.graph import Node, Edge, NodeType, EdgeType
 class RouteScanner(BaseScanner):
     """Scanner for Flask routes and blueprints."""
     
+    # Decorator names (or name fragments) that indicate a route requires
+    # authentication.  Checked case-insensitively against the full decorator
+    # name so that project-specific wrappers like `require_auth` or
+    # `admin_required` are caught alongside the Flask-Login standard.
+    _AUTH_DECORATOR_HINTS = frozenset([
+        "login_required",
+        "auth_required",
+        "require_login",
+        "require_auth",
+        "admin_required",
+        "roles_required",
+        "permission_required",
+        "fresh_login_required",   # Flask-Login
+        "jwt_required",           # Flask-JWT-Extended
+        "token_required",
+    ])
+
     def __init__(self, project_path: Path):
         super().__init__(project_path)
         self.blueprints: dict[str, dict[str, Any]] = {}  # name -> {url_prefix, file_path}
@@ -79,6 +96,8 @@ class RouteScanner(BaseScanner):
                         "methods": [method],
                         "view_function": route_info["view_function"],
                         "blueprint": blueprint_name,
+                        "decorators": route_info.get("decorators", []),
+                        "auth_required": route_info.get("auth_required", False),
                     }
                 )
                 nodes.append(node)
@@ -154,19 +173,18 @@ class RouteScanner(BaseScanner):
                                                     bp_info["url_prefix"] = prefix
     
     def _extract_routes(self, tree: ast.Module, file_path: Path) -> None:
-        """Extract route decorators."""
+        """Extract route decorators from both sync and async view functions."""
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                # Check decorators for @app.route or @bp.route
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for decorator in node.decorator_list:
                     route_info = self._parse_route_decorator(decorator, node, file_path)
                     if route_info:
                         self.routes.append(route_info)
     
     def _parse_route_decorator(
-        self, 
-        decorator: ast.expr, 
-        func_node: ast.FunctionDef,
+        self,
+        decorator: ast.expr,
+        func_node: ast.FunctionDef | ast.AsyncFunctionDef,
         file_path: Path
     ) -> dict[str, Any] | None:
         """Parse a route decorator and extract route information."""
@@ -205,6 +223,22 @@ class RouteScanner(BaseScanner):
             if keyword.arg == "methods":
                 methods = self._get_list_values(keyword.value)
         
+        # Collect all non-route decorators on this function so callers can
+        # inspect them (e.g. to detect @login_required).
+        other_decorators = []
+        for dec in func_node.decorator_list:
+            if dec is decorator:
+                continue   # skip the @bp.route() we're currently parsing
+            name = self._extract_decorator_name(dec)
+            if name:
+                other_decorators.append(name)
+
+        # Detect auth requirement from sibling decorators
+        auth_required = any(
+            any(hint in name.lower() for hint in self._AUTH_DECORATOR_HINTS)
+            for name in other_decorators
+        )
+
         return {
             "path": path,
             "methods": methods,
@@ -212,8 +246,35 @@ class RouteScanner(BaseScanner):
             "file_path": file_path,
             "line_number": func_node.lineno,
             "blueprint": blueprint_name,
+            "decorators": other_decorators,
+            "auth_required": auth_required,
         }
     
+    def _extract_decorator_name(self, node: ast.expr) -> str | None:
+        """Return a human-readable name for a decorator node.
+
+        Handles the three common forms:
+          @login_required          → "login_required"
+          @roles_required("admin") → "roles_required"
+          @auth.login_required     → "auth.login_required"
+        """
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            # e.g. auth.login_required
+            parts = []
+            cur: ast.expr = node
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.append(cur.id)
+            return ".".join(reversed(parts))
+        if isinstance(node, ast.Call):
+            # e.g. roles_required("admin") — return the function name only
+            return self._extract_decorator_name(node.func)
+        return None
+
     def _is_blueprint_call(self, node: ast.Call) -> bool:
         """Check if a call is Blueprint(...)."""
         if isinstance(node.func, ast.Name):

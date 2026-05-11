@@ -17,6 +17,8 @@ export interface NodeMetadata {
   methods?: string[];
   view_function?: string;
   blueprint?: string;
+  auth_required?: boolean;
+  decorators?: string[];
   
   // Action/Service metadata
   complexity?: number;
