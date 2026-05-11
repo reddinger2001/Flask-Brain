@@ -781,6 +781,67 @@ def test_view_tracer_resolves_uses_model_edges_for_cross_file_imports(tmp_path):
     # An action node must have been created for the service function
     action_ids = {n.id for n in nodes}
     assert "action::upload" in action_ids or "action::list_all" in action_ids, (
-        "Expected action node for service function using EvidenceFile; "
+        "Expected action node for standalone service function using EvidenceFile; "
         f"got action nodes: {[n.id for n in nodes if n.id.startswith('action::')]}"
+    )
+
+
+def test_view_tracer_emits_service_node_uses_model_edges_for_class_methods(tmp_path):
+    """USES_MODEL edges from service class methods must use service:: as source.
+
+    Regression test: _trace_service_model_calls previously emitted all edges
+    from action::method_name, making them invisible to graph.trace_node() calls
+    on service:: nodes and therefore useless for the test generator.
+
+    Methods inside a Service/Repository/Manager class must produce
+    ``service::ClassName → model::M`` edges so that blueprint_subgraph() and
+    trace_node() return the correct model set.
+    """
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "__init__.py").write_text("")
+    (models_dir / "invoice.py").write_text(
+        "from flask_sqlalchemy import SQLAlchemy\n"
+        "db = SQLAlchemy()\n"
+        "class Invoice(db.Model):\n"
+        "    id = db.Column(db.Integer, primary_key=True)\n"
+    )
+
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    (services_dir / "__init__.py").write_text("")
+    (services_dir / "billing_service.py").write_text(
+        "from models.invoice import Invoice\n"
+        "\n"
+        "class BillingService:\n"
+        "    def create_invoice(self, data):\n"
+        "        inv = Invoice()\n"
+        "        return inv\n"
+        "\n"
+        "    def list_invoices(self):\n"
+        "        return Invoice.query.all()\n"
+    )
+
+    (tmp_path / "__init__.py").write_text("")
+
+    tracer = ViewFunctionTracer(tmp_path)
+    nodes, edges = tracer.scan()
+
+    uses_model_edges = [
+        e for e in edges
+        if e.type == EdgeType.USES_MODEL and e.target == "model::Invoice"
+    ]
+    assert uses_model_edges, (
+        "Expected at least one USES_MODEL edge to model::Invoice; "
+        f"got edges: {[e for e in edges if 'Invoice' in str(e)]}"
+    )
+
+    # Sources must be service::BillingService, NOT action::create_invoice etc.
+    sources = {e.source for e in uses_model_edges}
+    assert "service::BillingService" in sources, (
+        f"Expected service::BillingService as edge source; got: {sources}"
+    )
+    action_sources = {s for s in sources if s.startswith("action::")}
+    assert not action_sources, (
+        f"Service class methods must not produce action:: edge sources; got: {action_sources}"
     )

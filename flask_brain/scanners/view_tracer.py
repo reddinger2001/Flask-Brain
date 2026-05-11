@@ -274,26 +274,39 @@ class ViewFunctionTracer(BaseScanner):
         return nodes, edges
 
     def _trace_service_model_calls(self, tree: ast.Module, file_path: Path) -> list[Edge]:
-        """Emit action→model USES_MODEL edges for non-view functions that use models.
+        """Emit service→model and action→model USES_MODEL edges for non-view functions.
 
         The main ``_trace_view_calls`` pass only walks functions that are
         registered as Flask route handlers.  Service and helper functions that
         directly query or construct models are therefore invisible to model-edge
-        detection.  This pass fills that gap: for every function whose name is
-        *not* a view function we walk its body and emit a USES_MODEL edge
-        whenever a model is referenced.  This means service methods that import
-        and use ``EvidenceFile`` will produce ``action::upload → model::EvidenceFile``
-        edges in the graph.
+        detection.  This pass fills that gap:
 
-        An ``action`` node is created for the service function so that
-        ``Graph.add_edge`` (which silently drops dangling edges) does not discard
-        the edges.
+        - For methods inside a recognised service class (name ends with
+          ``Service``, ``Repository``, or ``Manager``) the edge source is
+          ``service::ClassName`` — directly connecting the service node the
+          test generator and graph queries look at.
+        - For standalone functions that are not view functions the source is
+          ``action::fn`` (original behaviour, preserved for non-service helpers).
+
+        An ``action`` node is still created for the standalone-function case so
+        that ``Graph.add_edge`` (which silently drops dangling edges) does not
+        discard the edges.
         """
         nodes = []
         edges = []
         local_models = self._get_local_models(file_path)
         if not local_models:
             return nodes, edges
+
+        # Build a map of method_name → service_class_name for service classes
+        # in this file so we can emit service::ClassName edges for methods.
+        _SERVICE_SUFFIXES = ("Service", "Repository", "Manager")
+        method_to_service: dict[str, str] = {}
+        for top_node in ast.walk(tree):
+            if isinstance(top_node, ast.ClassDef) and top_node.name.endswith(_SERVICE_SUFFIXES):
+                for item in top_node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        method_to_service[item.name] = top_node.name
 
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -311,24 +324,35 @@ class ViewFunctionTracer(BaseScanner):
                 for target, edge_type in targets:
                     if edge_type == EdgeType.USES_MODEL and target not in seen_targets:
                         seen_targets.add(target)
-                        model_edges.append(Edge(
+                        model_edges.append((target,))
+
+            if model_edges:
+                service_name = method_to_service.get(node.name)
+                if service_name:
+                    # Emit service::ClassName → model::M edges
+                    for (target,) in model_edges:
+                        edges.append(Edge(
+                            source=f"service::{service_name}",
+                            target=target,
+                            type=EdgeType.USES_MODEL,
+                        ))
+                else:
+                    # Standalone helper — keep original action:: behaviour
+                    action_node = Node(
+                        id=f"action::{node.name}",
+                        type=NodeType.ACTION,
+                        label=node.name,
+                        file_path=self._get_relative_path(file_path),
+                        line_number=node.lineno,
+                        metadata={},
+                    )
+                    nodes.append(action_node)
+                    for (target,) in model_edges:
+                        edges.append(Edge(
                             source=f"action::{node.name}",
                             target=target,
                             type=EdgeType.USES_MODEL,
                         ))
-
-            if model_edges:
-                # Create the action node so add_edge doesn't drop the edges
-                action_node = Node(
-                    id=f"action::{node.name}",
-                    type=NodeType.ACTION,
-                    label=node.name,
-                    file_path=self._get_relative_path(file_path),
-                    line_number=node.lineno,
-                    metadata={},
-                )
-                nodes.append(action_node)
-                edges.extend(model_edges)
 
         return nodes, edges
 
